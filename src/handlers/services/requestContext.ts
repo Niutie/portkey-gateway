@@ -164,10 +164,11 @@ export class RequestContext {
     let cacheStatus = 'DISABLED';
     if (typeof cacheConfig === 'object' && cacheConfig?.mode) {
       cacheStatus = cacheConfig.mode === 'DISABLED' ? 'DISABLED' : 'MISS';
+      const rawMaxAge = (cacheConfig as any).maxAge ?? (cacheConfig as any).max_age;
       return {
         mode: cacheConfig.mode,
-        maxAge: cacheConfig.maxAge
-          ? parseInt(cacheConfig.maxAge.toString())
+        maxAge: rawMaxAge
+          ? parseInt(rawMaxAge.toString())
           : undefined,
         cacheStatus,
       };
