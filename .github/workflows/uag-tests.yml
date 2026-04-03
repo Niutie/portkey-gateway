@@ -5,6 +5,7 @@ on:
     branches: ['uag/**']
   pull_request:
     branches: ['uag/**']
+  workflow_dispatch:
 
 jobs:
   test:

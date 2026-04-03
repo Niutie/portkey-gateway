@@ -129,36 +129,69 @@ describe('UAG: TTL 秒→毫秒转换 (AC #3)', () => {
     expect(cached).toBeNull();
   });
 
-  it('memoryCache middleware computes TTL as cacheMaxAge * 1000 (seconds to milliseconds)', () => {
-    // This test validates the conversion formula used in memoryCache():
-    // new Date().getTime() + (requestOptions.cacheMaxAge ? requestOptions.cacheMaxAge * 1000 : 24 * 60 * 60 * 1000)
+  it('memoryCache middleware computes TTL as cacheMaxAge * 1000 — validated via putInCache/getFromCache round-trip', async () => {
+    // Validate that a cache entry stored with a future maxAge (simulating cacheMaxAge * 1000)
+    // is retrievable, confirming the TTL is interpreted as an absolute millisecond timestamp
     const cacheMaxAgeSeconds = 7200; // 2 hours
-    const now = Date.now();
-    const expectedMaxAge = now + cacheMaxAgeSeconds * 1000;
+    const futureMaxAge = Date.now() + cacheMaxAgeSeconds * 1000;
 
-    // The formula from the middleware
-    const computedMaxAge = now + cacheMaxAgeSeconds * 1000;
+    const requestBody = {
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'ttl-formula-test' }],
+    };
+    const responseBody = { result: 'ttl-formula-cached' };
+    const url = 'https://api.test.com/v1/ttl-formula';
 
-    expect(computedMaxAge).toBe(expectedMaxAge);
-    // Verify it's in milliseconds (much larger than seconds value)
-    expect(computedMaxAge).toBeGreaterThan(cacheMaxAgeSeconds);
-    // Verify the multiplication factor
-    expect(computedMaxAge - now).toBe(cacheMaxAgeSeconds * 1000);
+    await putInCache(
+      null,
+      {},
+      requestBody,
+      responseBody,
+      url,
+      '',
+      'simple',
+      futureMaxAge
+    );
+
+    const [cached, status] = await getFromCache(
+      null,
+      {},
+      requestBody,
+      url,
+      '',
+      'simple',
+      null
+    );
+    expect(status).toBe('HIT');
+    expect(JSON.parse(cached)).toEqual(responseBody);
+
+    // The multiplication factor: 7200 * 1000 = 7,200,000 ms offset from now
+    expect(futureMaxAge - Date.now()).toBeGreaterThan(7_000_000);
+    expect(futureMaxAge - Date.now()).toBeLessThan(7_200_001);
   });
 
-  it('default TTL should be 24 hours in milliseconds when cacheMaxAge is not provided', () => {
+  it('default TTL should be 24 hours in milliseconds when cacheMaxAge is not provided', async () => {
     // When cacheMaxAge is falsy, the formula uses: 24 * 60 * 60 * 1000
-    const defaultTTLms = 24 * 60 * 60 * 1000;
-    const now = Date.now();
-    const expectedMaxAge = now + defaultTTLms;
-
-    // Simulate the middleware logic: cacheMaxAge is undefined/null/0
+    // Validate via the ternary logic: (cacheMaxAge ? cacheMaxAge * 1000 : 24*60*60*1000)
     const cacheMaxAge = 0;
-    const computedMaxAge =
-      now + (cacheMaxAge ? cacheMaxAge * 1000 : 24 * 60 * 60 * 1000);
+    const computedTTLoffset = cacheMaxAge
+      ? cacheMaxAge * 1000
+      : 24 * 60 * 60 * 1000;
+    expect(computedTTLoffset).toBe(86400000); // 24h in ms
 
-    expect(computedMaxAge).toBe(expectedMaxAge);
-    expect(defaultTTLms).toBe(86400000); // 24h in ms
+    // Also validate with undefined
+    const cacheMaxAgeUndef = undefined;
+    const computedTTLoffset2 = cacheMaxAgeUndef
+      ? cacheMaxAgeUndef * 1000
+      : 24 * 60 * 60 * 1000;
+    expect(computedTTLoffset2).toBe(86400000);
+
+    // And with null
+    const cacheMaxAgeNull = null as unknown as number;
+    const computedTTLoffset3 = cacheMaxAgeNull
+      ? cacheMaxAgeNull * 1000
+      : 24 * 60 * 60 * 1000;
+    expect(computedTTLoffset3).toBe(86400000);
   });
 });
 

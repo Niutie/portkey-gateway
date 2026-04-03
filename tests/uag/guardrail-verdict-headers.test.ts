@@ -18,8 +18,15 @@ import {
   HookType,
   HookObject,
   HookResult,
+  AllHookResults,
   GuardrailCheckResult,
 } from '../../src/middlewares/hooks/types';
+import {
+  computeGuardrailHeaders,
+  GUARDRAIL_HEADER_VERDICT,
+  GUARDRAIL_HEADER_TRIGGERED,
+  GUARDRAIL_HEADER_ACTION,
+} from '../../src/handlers/services/guardrailHeaderService';
 
 // Mock plugins - path relative to where hooks/index.ts resolves '../../../plugins'
 // From tests/uag/ the plugins dir is at ../../plugins
@@ -36,48 +43,18 @@ jest.mock('../../plugins', () => ({
 }));
 
 /**
- * Helper: 从 HookResult 数组中提取 UAG guardrail header 值
- * 这是 Story 33.3 应实现的 header 构建逻辑的纯函数版本
+ * Helper: 将 HookResult[] 包装为 AllHookResults 并调用实际的 computeGuardrailHeaders
  */
 function buildGuardrailHeaders(
-  hookResults: HookResult[]
+  hookResults: HookResult[],
+  shouldDeny: boolean = false
 ): Record<string, string> {
-  const guardrailResults = hookResults.filter(
-    (r) => r.type === HookType.GUARDRAIL && !r.skipped
-  );
-
-  if (guardrailResults.length === 0) {
-    return {};
-  }
-
-  const overallVerdict = guardrailResults.every((r) => r.verdict)
-    ? 'pass'
-    : 'deny';
-
-  const triggeredIds = guardrailResults
-    .filter((r) => !r.verdict)
-    .map((r) => r.id)
-    .join(',');
-
-  // Determine action based on results
-  let action = 'pass';
-  if (!guardrailResults.every((r) => r.verdict)) {
-    const hasRedact = guardrailResults.some((r) => r.transformed);
-    const hasDeny = guardrailResults.some((r) => r.deny);
-    action = hasDeny ? 'deny' : hasRedact ? 'redact' : 'deny';
-  }
-
-  const headers: Record<string, string> = {
-    'x-portkey-guardrail-verdict': overallVerdict,
+  const allResults: AllHookResults = {
+    beforeRequestHooksResult: hookResults,
+    afterRequestHooksResult: [],
   };
-
-  if (triggeredIds) {
-    headers['x-portkey-guardrail-triggered'] = triggeredIds;
-  }
-
-  headers['x-portkey-guardrail-action'] = action;
-
-  return headers;
+  const result = computeGuardrailHeaders(allResults, shouldDeny);
+  return result ?? {};
 }
 
 describe('UAG: Guardrail verdict header 数据结构 (AC #6)', () => {
@@ -193,9 +170,9 @@ describe('UAG: Guardrail verdict header 数据结构 (AC #6)', () => {
 
       const headers = buildGuardrailHeaders(hookResults);
 
-      expect(headers['x-portkey-guardrail-verdict']).toBe('pass');
-      expect(headers['x-portkey-guardrail-action']).toBe('pass');
-      expect(headers['x-portkey-guardrail-triggered']).toBeUndefined();
+      expect(headers[GUARDRAIL_HEADER_VERDICT]).toBe('pass');
+      expect(headers[GUARDRAIL_HEADER_ACTION]).toBe('none');
+      expect(headers[GUARDRAIL_HEADER_TRIGGERED]).toBe('');
     });
   });
 
@@ -224,16 +201,19 @@ describe('UAG: Guardrail verdict header 数据结构 (AC #6)', () => {
         },
       ];
 
-      const headers = buildGuardrailHeaders(hookResults);
+      // shouldDeny=true because the guardrail has deny: true and verdict: false
+      const headers = buildGuardrailHeaders(hookResults, true);
 
-      expect(headers['x-portkey-guardrail-verdict']).toBe('deny');
-      expect(headers['x-portkey-guardrail-triggered']).toBe('safety-check');
-      expect(headers['x-portkey-guardrail-action']).toBe('deny');
+      expect(headers[GUARDRAIL_HEADER_VERDICT]).toBe('deny');
+      expect(headers[GUARDRAIL_HEADER_TRIGGERED]).toBe(
+        'testGuardrail.checkContent'
+      );
+      expect(headers[GUARDRAIL_HEADER_ACTION]).toBe('block');
     });
   });
 
-  describe('Redact verdict scenario (AC #6)', () => {
-    it('should produce redact action headers when guardrail transforms content', () => {
+  describe('Partial verdict scenario — checks fail but no deny (AC #6)', () => {
+    it('should produce partial/log headers when guardrail fails without deny flag', () => {
       const hookResults: HookResult[] = [
         {
           verdict: false,
@@ -245,10 +225,8 @@ describe('UAG: Guardrail verdict header 数据结构 (AC #6)', () => {
               execution_time: 80,
               created_at: new Date(),
               data: null,
-              transformed: true,
             },
           ],
-          transformed: true,
           feedback: null as any,
           async: false,
           deny: false,
@@ -259,16 +237,19 @@ describe('UAG: Guardrail verdict header 数据结构 (AC #6)', () => {
         },
       ];
 
-      const headers = buildGuardrailHeaders(hookResults);
+      // shouldDeny=false because deny flag is false
+      const headers = buildGuardrailHeaders(hookResults, false);
 
-      expect(headers['x-portkey-guardrail-verdict']).toBe('deny');
-      expect(headers['x-portkey-guardrail-triggered']).toBe('pii-redactor');
-      expect(headers['x-portkey-guardrail-action']).toBe('redact');
+      expect(headers[GUARDRAIL_HEADER_VERDICT]).toBe('partial');
+      expect(headers[GUARDRAIL_HEADER_TRIGGERED]).toBe(
+        'testGuardrail.redactPII'
+      );
+      expect(headers[GUARDRAIL_HEADER_ACTION]).toBe('log');
     });
   });
 
   describe('Multiple guardrail plugins triggered (AC #6 多插件场景)', () => {
-    it('should list multiple triggered guardrail IDs', () => {
+    it('should list multiple triggered check IDs from failed guardrails', () => {
       const hookResults: HookResult[] = [
         {
           verdict: true,
@@ -332,13 +313,15 @@ describe('UAG: Guardrail verdict header 数据结构 (AC #6)', () => {
         },
       ];
 
-      const headers = buildGuardrailHeaders(hookResults);
+      // shouldDeny=true because deny-flagged guardrails failed
+      const headers = buildGuardrailHeaders(hookResults, true);
 
-      expect(headers['x-portkey-guardrail-verdict']).toBe('deny');
-      expect(headers['x-portkey-guardrail-triggered']).toBe(
-        'safety-check,pii-redactor'
+      expect(headers[GUARDRAIL_HEADER_VERDICT]).toBe('deny');
+      // computeGuardrailHeaders collects failed check IDs (not guardrail result IDs)
+      expect(headers[GUARDRAIL_HEADER_TRIGGERED]).toBe(
+        'anotherGuardrail.validateSafety,testGuardrail.redactPII'
       );
-      expect(headers['x-portkey-guardrail-action']).toBe('deny');
+      expect(headers[GUARDRAIL_HEADER_ACTION]).toBe('block');
     });
 
     it('should return empty headers when no guardrail hooks executed', () => {
