@@ -17,5 +17,5 @@
       "apiKey": "..."
     }
   },
-  "cache": false
+  "cache": true
 }
