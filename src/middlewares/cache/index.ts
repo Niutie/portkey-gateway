@@ -11,8 +11,9 @@ const CACHE_STATUS = {
   DISABLED: 'DISABLED',
 };
 
-const getCacheKey = async (requestBody: any, url: string) => {
-  const stringToHash = `${JSON.stringify(requestBody)}-${url}`;
+const getCacheKey = async (requestBody: any, url: string, namespace?: string) => {
+  const namespacePart = namespace ? `-ns:${namespace}` : '';
+  const stringToHash = `${JSON.stringify(requestBody)}-${url}${namespacePart}`;
   const myText = new TextEncoder().encode(stringToHash);
   let cacheDigest = await crypto.subtle.digest(
     {
@@ -33,13 +34,14 @@ export const getFromCache = async (
   url: string,
   organisationId: string,
   cacheMode: string,
-  cacheMaxAge: number | null
+  cacheMaxAge: number | null,
+  namespace?: string
 ) => {
   if ('x-portkey-cache-force-refresh' in requestHeaders) {
     return [null, CACHE_STATUS.REFRESH, null];
   }
   try {
-    const cacheKey = await getCacheKey(requestBody, url);
+    const cacheKey = await getCacheKey(requestBody, url, namespace);
 
     if (cacheKey in inMemoryCache) {
       const cacheObject = inMemoryCache[cacheKey];
@@ -65,14 +67,15 @@ export const putInCache = async (
   url: string,
   organisationId: string,
   cacheMode: string | null,
-  cacheMaxAge: number | null
+  cacheMaxAge: number | null,
+  namespace?: string
 ) => {
   if (requestBody.stream) {
     // Does not support caching of streams
     return;
   }
 
-  const cacheKey = await getCacheKey(requestBody, url);
+  const cacheKey = await getCacheKey(requestBody, url, namespace);
 
   inMemoryCache[cacheKey] = {
     responseBody: JSON.stringify(responseBody),
@@ -82,7 +85,21 @@ export const putInCache = async (
 
 export const memoryCache = () => {
   return async (c: Context, next: any) => {
-    c.set('getFromCache', getFromCache);
+    const requestHeaders = c.req.header() || {};
+    const namespace = requestHeaders['x-portkey-cache-namespace'] || undefined;
+
+    // Wrap getFromCache to automatically pass namespace
+    const getFromCacheWithNamespace = (
+      env: any,
+      reqHeaders: any,
+      requestBody: any,
+      url: string,
+      organisationId: string,
+      cacheMode: string,
+      cacheMaxAge: number | null
+    ) => getFromCache(env, reqHeaders, requestBody, url, organisationId, cacheMode, cacheMaxAge, namespace);
+
+    c.set('getFromCache', getFromCacheWithNamespace);
 
     await next();
 
@@ -92,7 +109,7 @@ export const memoryCache = () => {
       requestOptions &&
       Array.isArray(requestOptions) &&
       requestOptions.length > 0 &&
-      requestOptions[0].requestParams.stream === (false || undefined)
+      !requestOptions[0].requestParams.stream
     ) {
       requestOptions = requestOptions[0];
       if (requestOptions.cacheMode === 'simple') {
@@ -105,7 +122,10 @@ export const memoryCache = () => {
           '',
           null,
           new Date().getTime() +
-            (requestOptions.cacheMaxAge || 24 * 60 * 60 * 1000)
+            (requestOptions.cacheMaxAge
+              ? requestOptions.cacheMaxAge * 1000
+              : 24 * 60 * 60 * 1000),
+          namespace
         );
       }
     }
