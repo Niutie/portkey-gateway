@@ -19,6 +19,8 @@ import { env } from 'hono/adapter';
 import { OpenAIModelResponseJSONToStreamGenerator } from '../providers/open-ai-base/createModelResponse';
 import { anthropicMessagesJsonToStreamGenerator } from '../providers/anthropic-base/utils/streamGenerator';
 import { endpointStrings } from '../providers/types';
+// UAG: Import guardrail header computation for audit trail (Story 33.3)
+import { computeGuardrailHeaders } from './services/guardrailHeaderService';
 
 /**
  * Handles various types of responses based on the specified parameters
@@ -103,6 +105,11 @@ export async function responseHandler(
     const hooksManager = c.get('hooksManager');
     const span = hooksManager.getSpan(hookSpanId) as HookSpan;
     const hooksResult = span.getHooksResult();
+
+    // UAG: Compute guardrail headers for streaming path (Story 33.3)
+    // In streaming, only beforeRequestHooksResult is available at this point.
+    const streamGuardrailHeaders = computeGuardrailHeaders(hooksResult, false);
+
     if (isCacheHit && responseTransformerFunction) {
       const streamingResponse = await handleJSONToStreamResponse(
         response,
@@ -112,19 +119,33 @@ export async function responseHandler(
         responseTransformer as endpointStrings,
         hooksResult
       );
+      // UAG: Inject guardrail headers into streaming response (Story 33.3)
+      if (streamGuardrailHeaders) {
+        for (const [key, value] of Object.entries(streamGuardrailHeaders)) {
+          streamingResponse.headers.set(key, value);
+        }
+      }
       return { response: streamingResponse, responseJson: null };
     }
+
+    const streamResponse = handleStreamingMode(
+      response,
+      provider,
+      responseTransformerFunction,
+      requestURL,
+      strictOpenAiCompliance,
+      gatewayRequest,
+      responseTransformer as endpointStrings,
+      hooksResult
+    );
+    // UAG: Inject guardrail headers into streaming response (Story 33.3)
+    if (streamGuardrailHeaders) {
+      for (const [key, value] of Object.entries(streamGuardrailHeaders)) {
+        streamResponse.headers.set(key, value);
+      }
+    }
     return {
-      response: handleStreamingMode(
-        response,
-        provider,
-        responseTransformerFunction,
-        requestURL,
-        strictOpenAiCompliance,
-        gatewayRequest,
-        responseTransformer as endpointStrings,
-        hooksResult
-      ),
+      response: streamResponse,
       responseJson: null,
     };
   }
@@ -190,6 +211,7 @@ function createHookResponse(
     statusText?: string;
     forceError?: boolean;
     headers?: Record<string, string>;
+    guardrailHeaders?: Record<string, string> | null; // UAG: Story 33.3
   } = {}
 ) {
   const responseBody = {
@@ -213,11 +235,20 @@ function createHookResponse(
     }),
   };
 
-  return new Response(JSON.stringify(responseBody), {
+  const response = new Response(JSON.stringify(responseBody), {
     status: options.status || baseResponse.status,
     statusText: options.statusText || baseResponse.statusText,
     headers: options.headers || baseResponse.headers,
   });
+
+  // UAG: Inject guardrail verdict headers into response (Story 33.3)
+  if (options.guardrailHeaders) {
+    for (const [key, value] of Object.entries(options.guardrailHeaders)) {
+      response.headers.set(key, value);
+    }
+  }
+
+  return response;
 }
 
 export async function afterRequestHookHandler(
@@ -253,6 +284,9 @@ export async function afterRequestHookHandler(
     const span = hooksManager.getSpan(hookSpanId) as HookSpan;
     const hooksResult = span.getHooksResult();
 
+    // UAG: Compute guardrail headers for all return paths (Story 33.3)
+    const guardrailHeaders = computeGuardrailHeaders(hooksResult, shouldDeny);
+
     const failedBeforeRequestHooks =
       hooksResult.beforeRequestHooksResult.filter((h) => !h.verdict);
     const failedAfterRequestHooks = hooksResult.afterRequestHooksResult.filter(
@@ -266,12 +300,19 @@ export async function afterRequestHookHandler(
         response.status === 200
       ) {
         // This should not be a major performance bottleneck as it is just copying the headers and using the body as is.
-        return new Response(response.body, {
+        const streamResp = new Response(response.body, {
           ...response,
           status: 246,
           statusText: 'Hooks failed',
           headers: response.headers,
         });
+        // UAG: Inject guardrail headers into streaming 246 response (Story 33.3)
+        if (guardrailHeaders) {
+          for (const [key, value] of Object.entries(guardrailHeaders)) {
+            streamResp.headers.set(key, value);
+          }
+        }
+        return streamResp;
       }
       return response;
     }
@@ -281,6 +322,7 @@ export async function afterRequestHookHandler(
         status: 446,
         headers: { 'content-type': 'application/json' },
         forceError: true,
+        guardrailHeaders, // UAG: Story 33.3
       });
     }
 
@@ -295,10 +337,13 @@ export async function afterRequestHookHandler(
       return createHookResponse(response, responseData, hooksResult, {
         status: 246,
         statusText: 'Hooks failed',
+        guardrailHeaders, // UAG: Story 33.3
       });
     }
 
-    return createHookResponse(response, responseData, hooksResult);
+    return createHookResponse(response, responseData, hooksResult, {
+      guardrailHeaders, // UAG: Story 33.3
+    });
   } catch (err) {
     console.error('afterRequestHookHandler error: ', err);
     return response;

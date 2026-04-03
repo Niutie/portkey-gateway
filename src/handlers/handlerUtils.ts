@@ -660,7 +660,16 @@ export async function tryTargetsRecursively(
   let response;
 
   switch (strategyMode) {
-    case StrategyModes.FALLBACK:
+    case StrategyModes.FALLBACK: {
+      // UAG: Route decision metadata — fallback tracking (Story 33.4)
+      const attemptLog: Array<{
+        provider: string;
+        status: number;
+        ok: boolean;
+      }> = [];
+      let fallbackActivated = false;
+      let fallbackFrom = '';
+
       for (const [index, target] of currentTarget.targets.entries()) {
         const originalIndex = target.originalIndex || index;
         response = await tryTargetsRecursively(
@@ -673,6 +682,14 @@ export async function tryTargetsRecursively(
           `${currentJsonPath}.targets[${originalIndex}]`,
           currentInheritedConfig
         );
+
+        // UAG: Collect attempt result for route decision metadata
+        attemptLog.push({
+          provider: target.provider || `target-${originalIndex}`,
+          status: response?.status || 0,
+          ok: response?.ok || false,
+        });
+
         const codes = currentTarget.strategy?.onStatusCodes;
         const gatewayException =
           response?.headers.get('x-portkey-gateway-exception') === 'true';
@@ -687,15 +704,57 @@ export async function tryTargetsRecursively(
           // Skip the fallback
           break;
         }
+
+        // UAG: Track fallback activation — first failure triggers fallback
+        if (index === 0) {
+          fallbackFrom = target.provider || `target-${originalIndex}`;
+        }
+        fallbackActivated = true;
+      }
+
+      // UAG: Inject route decision headers into response (Story 33.4)
+      if (response) {
+        try {
+          response.headers.set(
+            'x-portkey-fallback-activated',
+            String(fallbackActivated)
+          );
+          if (fallbackActivated && fallbackFrom) {
+            response.headers.set('x-portkey-fallback-from', fallbackFrom);
+          }
+          // UAG: Truncate attempt log to max 10 entries to limit header size
+          const truncatedLog =
+            attemptLog.length > 10
+              ? [
+                  ...attemptLog.slice(0, 10),
+                  { provider: '_truncated', status: 0, ok: false },
+                ]
+              : attemptLog;
+          response.headers.set(
+            'x-portkey-attempt-log',
+            JSON.stringify(truncatedLog)
+          );
+        } catch (e) {
+          // UAG: Swallow serialization errors to avoid breaking the request chain
+        }
       }
       break;
+    }
 
-    case StrategyModes.LOADBALANCE:
+    case StrategyModes.LOADBALANCE: {
       currentTarget.targets.forEach((t: Options) => {
         if (t.weight === undefined) {
           t.weight = 1;
         }
       });
+
+      // UAG: Capture weight snapshot before selection for route decision metadata (Story 33.4)
+      const weightSnapshot: Record<string, number> = {};
+      currentTarget.targets.forEach((t: Options, i: number) => {
+        weightSnapshot[t.provider || `target-${t.originalIndex || i}`] =
+          t.weight!;
+      });
+
       let totalWeight = currentTarget.targets.reduce(
         (sum: number, provider: any) => sum + provider.weight,
         0
@@ -720,7 +779,20 @@ export async function tryTargetsRecursively(
         }
         randomWeight -= provider.weight;
       }
+
+      // UAG: Inject load balance weight snapshot header (Story 33.4)
+      if (response) {
+        try {
+          response.headers.set(
+            'x-portkey-lb-weights',
+            JSON.stringify(weightSnapshot)
+          );
+        } catch (e) {
+          // UAG: Swallow serialization errors to avoid breaking the request chain
+        }
+      }
       break;
+    }
 
     case StrategyModes.CONDITIONAL: {
       let metadata: Record<string, string>;

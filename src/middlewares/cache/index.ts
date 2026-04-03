@@ -11,7 +11,11 @@ const CACHE_STATUS = {
   DISABLED: 'DISABLED',
 };
 
-const getCacheKey = async (requestBody: any, url: string, namespace?: string) => {
+const getCacheKey = async (
+  requestBody: any,
+  url: string,
+  namespace?: string
+) => {
   const namespacePart = namespace ? `-ns:${namespace}` : '';
   const stringToHash = `${JSON.stringify(requestBody)}-${url}${namespacePart}`;
   const myText = new TextEncoder().encode(stringToHash);
@@ -97,7 +101,17 @@ export const memoryCache = () => {
       organisationId: string,
       cacheMode: string,
       cacheMaxAge: number | null
-    ) => getFromCache(env, reqHeaders, requestBody, url, organisationId, cacheMode, cacheMaxAge, namespace);
+    ) =>
+      getFromCache(
+        env,
+        reqHeaders,
+        requestBody,
+        url,
+        organisationId,
+        cacheMode,
+        cacheMaxAge,
+        namespace
+      );
 
     c.set('getFromCache', getFromCacheWithNamespace);
 
