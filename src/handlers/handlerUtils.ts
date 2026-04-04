@@ -666,6 +666,7 @@ export async function tryTargetsRecursively(
         provider: string;
         status: number;
         ok: boolean;
+        status_text?: string;
       }> = [];
       let fallbackActivated = false;
       let fallbackFrom = '';
@@ -684,11 +685,16 @@ export async function tryTargetsRecursively(
         );
 
         // UAG: Collect attempt result for route decision metadata
-        attemptLog.push({
+        const entry: (typeof attemptLog)[number] = {
           provider: target.provider || `target-${originalIndex}`,
           status: response?.status || 0,
           ok: response?.ok || false,
-        });
+        };
+        // Include HTTP reason phrase for failed attempts (e.g., "Too Many Requests")
+        if (!response?.ok && response?.statusText) {
+          entry.status_text = response.statusText;
+        }
+        attemptLog.push(entry);
 
         const codes = currentTarget.strategy?.onStatusCodes;
         const gatewayException =
