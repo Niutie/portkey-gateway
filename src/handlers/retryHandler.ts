@@ -1,6 +1,40 @@
 import retry from 'async-retry';
 import { MAX_RETRY_LIMIT_MS, POSSIBLE_RETRY_STATUS_HEADERS } from '../globals';
 
+/**
+ * A single entry in the router attempt log, tracking one retry attempt.
+ */
+export interface RouterAttemptEntry {
+  provider: string;
+  status: number;
+  ok: boolean;
+  duration_ms: number;
+  is_retry: boolean;
+  is_fallback: boolean;
+  status_text?: string;
+}
+
+/**
+ * The full attempt log structure serialized into x-router-attempt-log.
+ */
+export interface RouterAttemptLog {
+  total: number;
+  attempts: (RouterAttemptEntry | { _skip: number })[];
+}
+
+/**
+ * Truncates attempt entries when > 10: keeps first 1 + skip marker + last 3.
+ */
+export function truncateAttemptLog(
+  entries: RouterAttemptEntry[]
+): (RouterAttemptEntry | { _skip: number })[] {
+  if (entries.length <= 10) {
+    return entries;
+  }
+  const skipped = entries.length - 4; // total - first 1 - last 3
+  return [entries[0], { _skip: skipped }, ...entries.slice(-3)];
+}
+
 async function fetchWithTimeout(
   url: string,
   options: RequestInit,
@@ -69,7 +103,8 @@ export const retryRequest = async (
   statusCodesToRetry: number[],
   timeout: number | null,
   requestHandler?: () => Promise<Response>,
-  followProviderRetry?: boolean
+  followProviderRetry?: boolean,
+  provider?: string
 ): Promise<{
   response: Response;
   attempt: number | undefined;
@@ -80,12 +115,15 @@ export const retryRequest = async (
   let lastAttempt: number | undefined;
   const start = new Date();
   let retrySkipped = false;
+  const attemptEntries: RouterAttemptEntry[] = [];
+  const providerName = provider ?? 'unknown';
 
   let remainingRetryTimeout = MAX_RETRY_LIMIT_MS;
 
   try {
     await retry(
       async (bail: any, attempt: number, rateLimiter: any) => {
+        const attemptStart = Date.now();
         try {
           let response: Response;
           if (timeout) {
@@ -103,7 +141,9 @@ export const retryRequest = async (
           if (statusCodesToRetry.includes(response.status)) {
             const errorObj: any = new Error(await response.text());
             errorObj.status = response.status;
+            errorObj.statusText = response.statusText;
             errorObj.headers = Object.fromEntries(response.headers);
+            errorObj._attemptStart = attemptStart;
 
             if (response.status === 429 && followProviderRetry) {
               // get retry header.
@@ -153,17 +193,33 @@ export const retryRequest = async (
 
             throw errorObj;
           } else if (response.status >= 200 && response.status <= 204) {
-            // do nothing
+            // Record the successful final attempt
+            const duration = Date.now() - attemptStart;
+            attemptEntries.push({
+              provider: providerName,
+              status: response.status,
+              ok: true,
+              duration_ms: duration,
+              is_retry: attempt > 1,
+              is_fallback: false,
+              status_text: response.statusText || undefined,
+            });
           } else {
             // All error codes that aren't retried need to be propogated up
             const errorObj: any = new Error(await response.clone().text());
             errorObj.status = response.status;
+            errorObj.statusText = response.statusText;
             errorObj.headers = Object.fromEntries(response.headers);
+            errorObj._attemptStart = attemptStart;
             bail(errorObj);
             return;
           }
           lastResponse = response;
         } catch (error: any) {
+          // Attach attempt start time if not already present
+          if (!error._attemptStart) {
+            error._attemptStart = attemptStart;
+          }
           if (attempt >= retryCount + 1) {
             bail(error);
             return;
@@ -173,13 +229,26 @@ export const retryRequest = async (
       },
       {
         retries: retryCount,
-        onRetry: (error: Error, attempt: number) => {
+        onRetry: (error: any, attempt: number) => {
           lastAttempt = attempt;
+          // Record the failed attempt that triggered this retry
+          const duration =
+            Date.now() - (error._attemptStart ?? start.getTime());
+          attemptEntries.push({
+            provider: providerName,
+            status: error.status ?? 0,
+            ok: false,
+            duration_ms: duration,
+            is_retry: attempt > 1,
+            is_fallback: false,
+            status_text: error.statusText || undefined,
+          });
         },
         randomize: false,
       }
     );
   } catch (error: any) {
+    const failedAttemptStart = error._attemptStart ?? start.getTime();
     if (
       error instanceof TypeError &&
       error.cause instanceof Error &&
@@ -210,18 +279,31 @@ export const retryRequest = async (
         headers: error.headers,
       });
     }
-  }
-  // Inject retry context headers into ALL failed responses so callers
-  // can always tell how many attempts were made and how long the total wait was.
-  if (lastResponse && lastResponse.status >= 300) {
-    const totalAttempts = (lastAttempt ?? 0) + 1;
-    const elapsedMs = Date.now() - start.getTime();
-    const headers = new Headers(lastResponse.headers);
-    headers.set('x-retry-attempts', String(totalAttempts));
-    headers.set('x-retry-elapsed-ms', String(elapsedMs));
-    if (timeout) {
-      headers.set('x-retry-per-attempt-timeout-ms', String(timeout));
+    // Record the final failed attempt for bail/exhaustion paths.
+    // onRetry only fires BEFORE the next attempt, so the last failed attempt
+    // (bail or exhausted retries) is never captured there.
+    if (lastResponse) {
+      const isRetry = attemptEntries.length > 0;
+      attemptEntries.push({
+        provider: providerName,
+        status: lastResponse.status,
+        ok: false,
+        duration_ms: Date.now() - failedAttemptStart,
+        is_retry: isRetry,
+        is_fallback: false,
+        status_text: error.statusText || undefined,
+      });
     }
+  }
+
+  // Inject unified attempt log header into the response
+  if (lastResponse && attemptEntries.length > 0) {
+    const attemptLog: RouterAttemptLog = {
+      total: attemptEntries.length,
+      attempts: truncateAttemptLog(attemptEntries),
+    };
+    const headers = new Headers(lastResponse.headers);
+    headers.set('x-router-attempt-log', JSON.stringify(attemptLog));
     lastResponse = new Response(lastResponse.body, {
       status: lastResponse.status,
       statusText: lastResponse.statusText,
