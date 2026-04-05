@@ -86,7 +86,7 @@ export class CacheService {
     const startTime = new Date();
     const { mode, maxAge } = context.cacheConfig;
 
-    if (!(this.getFromCacheFunction && mode)) {
+    if (!(this.getFromCacheFunction && mode) || mode === 'DISABLED') {
       return this.noCacheObject;
     }
 
