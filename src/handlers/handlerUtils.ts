@@ -20,7 +20,12 @@ import {
 import { endpointStrings } from '../providers/types';
 import { Options, Params, StrategyModes, Targets } from '../types/requestBody';
 import { convertKeysToCamelCase } from '../utils';
-import { retryRequest } from './retryHandler';
+import {
+  retryRequest,
+  truncateAttemptLog,
+  RouterAttemptEntry,
+  RouterAttemptLog,
+} from './retryHandler';
 import { env } from 'hono/adapter';
 import { afterRequestHookHandler, responseHandler } from './responseHandlers';
 import { HookSpan } from '../middlewares/hooks';
@@ -661,18 +666,12 @@ export async function tryTargetsRecursively(
 
   switch (strategyMode) {
     case StrategyModes.FALLBACK: {
-      // UAG: Route decision metadata — fallback tracking (Story 33.4)
-      const attemptLog: Array<{
-        provider: string;
-        status: number;
-        ok: boolean;
-        status_text?: string;
-      }> = [];
-      let fallbackActivated = false;
-      let fallbackFrom = '';
+      // UAG: Route decision metadata — unified attempt log (Story 33.4 / Task 2)
+      const attemptLog: RouterAttemptEntry[] = [];
 
       for (const [index, target] of currentTarget.targets.entries()) {
         const originalIndex = target.originalIndex || index;
+        const attemptStart = Date.now();
         response = await tryTargetsRecursively(
           c,
           target,
@@ -683,12 +682,16 @@ export async function tryTargetsRecursively(
           `${currentJsonPath}.targets[${originalIndex}]`,
           currentInheritedConfig
         );
+        const duration_ms = Date.now() - attemptStart;
 
-        // UAG: Collect attempt result for route decision metadata
-        const entry: (typeof attemptLog)[number] = {
+        // UAG: Collect attempt result for unified route decision metadata
+        const entry: RouterAttemptEntry = {
           provider: target.provider || `target-${originalIndex}`,
           status: response?.status || 0,
           ok: response?.ok || false,
+          duration_ms,
+          is_retry: false, // retries are tracked by retryHandler, not fallback loop
+          is_fallback: index > 0,
         };
         // Include HTTP reason phrase for failed attempts (e.g., "Too Many Requests")
         if (!response?.ok && response?.statusText) {
@@ -710,35 +713,18 @@ export async function tryTargetsRecursively(
           // Skip the fallback
           break;
         }
-
-        // UAG: Track fallback activation — first failure triggers fallback
-        if (index === 0) {
-          fallbackFrom = target.provider || `target-${originalIndex}`;
-        }
-        fallbackActivated = true;
       }
 
-      // UAG: Inject route decision headers into response (Story 33.4)
+      // UAG: Inject unified x-router-attempt-log header (Story 33.4 / Task 2)
       if (response) {
         try {
+          const routerLog: RouterAttemptLog = {
+            total: attemptLog.length,
+            attempts: truncateAttemptLog(attemptLog),
+          };
           response.headers.set(
-            'x-portkey-fallback-activated',
-            String(fallbackActivated)
-          );
-          if (fallbackActivated && fallbackFrom) {
-            response.headers.set('x-portkey-fallback-from', fallbackFrom);
-          }
-          // UAG: Truncate attempt log to max 10 entries to limit header size
-          const truncatedLog =
-            attemptLog.length > 10
-              ? [
-                  ...attemptLog.slice(0, 10),
-                  { provider: '_truncated', status: 0, ok: false },
-                ]
-              : attemptLog;
-          response.headers.set(
-            'x-portkey-attempt-log',
-            JSON.stringify(truncatedLog)
+            'x-router-attempt-log',
+            JSON.stringify(routerLog)
           );
         } catch (e) {
           // UAG: Swallow serialization errors to avoid breaking the request chain

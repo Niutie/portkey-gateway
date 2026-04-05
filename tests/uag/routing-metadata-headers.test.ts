@@ -1,17 +1,13 @@
 /**
  * UAG 路由元数据 Header 测试
  *
- * 验证路由决策后响应应包含：
- * - x-portkey-fallback-activated: 是否激活了 fallback（true/false）
- * - x-portkey-fallback-from: fallback 来源 target 索引
- * - x-portkey-lb-weights: 负载均衡权重信息
- * - x-portkey-attempt-log: 多 target 尝试日志
+ * 验证路由决策后响应应包含统一的 x-router-attempt-log header：
+ * - Retry 场景（retryHandler）：is_retry 标记
+ * - Fallback 场景（handlerUtils）：is_fallback 标记 + duration_ms
  *
- * 注意：Story 33.4 的 fork 源码修改定义了 header 注入逻辑。
- * 本测试验证路由策略的数据流和基于路由结果构建 header 的逻辑。
- *
- * 对应 UAG 修改（Story 33.4）：
- * - 路由决策链路注入 fallback-activated/fallback-from/lb-weights/attempt-log 响应 header
+ * 对应 UAG 修改（Story 33.4 / Task 1 + Task 2）：
+ * - retryHandler: 统一 attempt log with is_retry
+ * - handlerUtils fallback block: 统一 attempt log with is_fallback + duration_ms
  */
 
 import { StrategyModes } from '../../src/types/requestBody';
@@ -23,224 +19,350 @@ import {
 } from '../../src/handlers/retryHandler';
 
 /**
- * 路由尝试记录类型 — 匹配 handlerUtils.ts 中 attemptLog 数组元素的实际结构
- */
-interface AttemptRecord {
-  provider: string;
-  status: number;
-  ok: boolean;
-}
-
-/**
- * Helper: 模拟 handlerUtils.ts 中 tryTargetsRecursively 的路由元数据 header 构建逻辑
+ * Helper: 模拟 handlerUtils.ts 中 fallback 模式的统一 x-router-attempt-log 构建逻辑
  *
- * 注意：实际代码使用 JSON.stringify 序列化 attemptLog 和 weightSnapshot，
- * 本辅助函数复现相同逻辑以便测试验证。
+ * 复现 handlerUtils.ts fallback block 的 header 构建：
+ * - 遍历 targets，记录 attemptLog (RouterAttemptEntry[])
+ * - 使用 truncateAttemptLog 截断
+ * - 写入 x-router-attempt-log = JSON({total, attempts})
  */
-function buildRoutingMetadataHeaders(params: {
-  strategyMode: string;
-  attempts: AttemptRecord[];
-  fallbackActivated: boolean;
-  fallbackFrom?: string;
-  weights?: Record<string, number>;
-}): Record<string, string> {
-  const { strategyMode, attempts, fallbackActivated, fallbackFrom, weights } =
-    params;
+function buildFallbackAttemptLogHeader(
+  attempts: RouterAttemptEntry[]
+): Record<string, string> {
   const headers: Record<string, string> = {};
-
-  // Fallback mode: set activation status and source
-  if (strategyMode === StrategyModes.FALLBACK) {
-    headers['x-portkey-fallback-activated'] = String(fallbackActivated);
-    if (fallbackActivated && fallbackFrom) {
-      headers['x-portkey-fallback-from'] = fallbackFrom;
-    }
-  }
-
-  // Single mode or no strategy: no fallback
-  if (strategyMode === StrategyModes.SINGLE || !strategyMode) {
-    headers['x-portkey-fallback-activated'] = 'false';
-  }
-
-  // Load balance weights — JSON serialized as in actual code
-  if (strategyMode === StrategyModes.LOADBALANCE && weights) {
-    headers['x-portkey-lb-weights'] = JSON.stringify(weights);
-    // loadbalance doesn't explicitly set fallback-activated in actual code
-  }
-
-  // Attempt log — JSON serialized as in actual code, truncated at 10
-  if (attempts.length > 0) {
-    const truncatedLog =
-      attempts.length > 10
-        ? [
-            ...attempts.slice(0, 10),
-            { provider: '_truncated', status: 0, ok: false },
-          ]
-        : attempts;
-    headers['x-portkey-attempt-log'] = JSON.stringify(truncatedLog);
-  }
-
+  const routerLog: RouterAttemptLog = {
+    total: attempts.length,
+    attempts: truncateAttemptLog(attempts),
+  };
+  headers['x-router-attempt-log'] = JSON.stringify(routerLog);
   return headers;
 }
 
-describe('UAG: 路由元数据 header (AC #7)', () => {
-  describe('Fallback 激活场景 (fallback-activated=true)', () => {
-    it('should set fallback-activated=true when multiple targets are tried', () => {
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.FALLBACK,
-        attempts: [
-          { provider: 'openai', status: 500, ok: false },
-          { provider: 'anthropic', status: 200, ok: true },
-        ],
-        fallbackActivated: true,
-        fallbackFrom: 'openai',
-      });
+/**
+ * Helper: 创建 fallback attempt entry
+ */
+function makeFallbackEntry(
+  overrides: Partial<RouterAttemptEntry> & {
+    provider: string;
+    status: number;
+    ok: boolean;
+  }
+): RouterAttemptEntry {
+  return {
+    duration_ms: 100,
+    is_retry: false,
+    is_fallback: false,
+    ...overrides,
+  };
+}
 
-      expect(headers['x-portkey-fallback-activated']).toBe('true');
-      expect(headers['x-portkey-fallback-from']).toBe('openai');
+describe('UAG: Fallback 模式 x-router-attempt-log (Task 2)', () => {
+  describe('is_fallback 标记', () => {
+    it('should set is_fallback=false for first target, is_fallback=true for subsequent targets', () => {
+      const attempts: RouterAttemptEntry[] = [
+        makeFallbackEntry({
+          provider: 'openai',
+          status: 500,
+          ok: false,
+          is_fallback: false,
+        }),
+        makeFallbackEntry({
+          provider: 'anthropic',
+          status: 200,
+          ok: true,
+          is_fallback: true,
+        }),
+      ];
+
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
+
+      expect(log.total).toBe(2);
+      expect(log.attempts).toHaveLength(2);
+
+      const first = log.attempts[0] as RouterAttemptEntry;
+      expect(first.is_fallback).toBe(false);
+      expect(first.provider).toBe('openai');
+
+      const second = log.attempts[1] as RouterAttemptEntry;
+      expect(second.is_fallback).toBe(true);
+      expect(second.provider).toBe('anthropic');
     });
 
-    it('should include fallback-from pointing to the first target provider', () => {
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.FALLBACK,
-        attempts: [
-          { provider: 'openai', status: 429, ok: false },
-          { provider: 'azure', status: 503, ok: false },
-          { provider: 'anthropic', status: 200, ok: true },
-        ],
-        fallbackActivated: true,
-        fallbackFrom: 'openai',
-      });
+    it('should set is_fallback=true for all targets after index 0 in multi-target chain', () => {
+      const attempts: RouterAttemptEntry[] = [
+        makeFallbackEntry({
+          provider: 'openai',
+          status: 500,
+          ok: false,
+          is_fallback: false,
+        }),
+        makeFallbackEntry({
+          provider: 'azure',
+          status: 503,
+          ok: false,
+          is_fallback: true,
+        }),
+        makeFallbackEntry({
+          provider: 'anthropic',
+          status: 200,
+          ok: true,
+          is_fallback: true,
+        }),
+      ];
 
-      expect(headers['x-portkey-fallback-activated']).toBe('true');
-      expect(headers['x-portkey-fallback-from']).toBe('openai');
-    });
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
 
-    it('should set fallback-activated=false when first target succeeds', () => {
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.FALLBACK,
-        attempts: [{ provider: 'openai', status: 200, ok: true }],
-        fallbackActivated: false,
-      });
-
-      expect(headers['x-portkey-fallback-activated']).toBe('false');
+      expect(log.total).toBe(3);
+      expect((log.attempts[0] as RouterAttemptEntry).is_fallback).toBe(false);
+      expect((log.attempts[1] as RouterAttemptEntry).is_fallback).toBe(true);
+      expect((log.attempts[2] as RouterAttemptEntry).is_fallback).toBe(true);
     });
   });
 
-  describe('Loadbalance 场景 (lb-weights)', () => {
-    it('should include lb-weights as JSON with weight distribution', () => {
-      const weights = { openai: 3, anthropic: 7 };
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.LOADBALANCE,
-        attempts: [{ provider: 'anthropic', status: 200, ok: true }],
-        fallbackActivated: false,
-        weights,
-      });
+  describe('is_retry 始终为 false（fallback 循环不处理重试）', () => {
+    it('should set is_retry=false for all fallback entries', () => {
+      const attempts: RouterAttemptEntry[] = [
+        makeFallbackEntry({
+          provider: 'openai',
+          status: 429,
+          ok: false,
+          is_fallback: false,
+        }),
+        makeFallbackEntry({
+          provider: 'anthropic',
+          status: 200,
+          ok: true,
+          is_fallback: true,
+        }),
+      ];
 
-      expect(headers['x-portkey-lb-weights']).toBe(JSON.stringify(weights));
-    });
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
 
-    it('should handle equal weights', () => {
-      const weights = { openai: 1, azure: 1, anthropic: 1 };
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.LOADBALANCE,
-        attempts: [{ provider: 'openai', status: 200, ok: true }],
-        fallbackActivated: false,
-        weights,
-      });
-
-      expect(headers['x-portkey-lb-weights']).toBe(JSON.stringify(weights));
+      const entries = log.attempts as RouterAttemptEntry[];
+      expect(entries.every((e) => e.is_retry === false)).toBe(true);
     });
   });
 
-  describe('Single 模式场景 (fallback-activated=false)', () => {
-    it('should set fallback-activated=false for single mode', () => {
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.SINGLE,
-        attempts: [{ provider: 'openai', status: 200, ok: true }],
-        fallbackActivated: false,
-      });
+  describe('duration_ms 字段', () => {
+    it('should include duration_ms for each attempt', () => {
+      const attempts: RouterAttemptEntry[] = [
+        makeFallbackEntry({
+          provider: 'openai',
+          status: 500,
+          ok: false,
+          duration_ms: 150,
+          is_fallback: false,
+        }),
+        makeFallbackEntry({
+          provider: 'anthropic',
+          status: 200,
+          ok: true,
+          duration_ms: 230,
+          is_fallback: true,
+        }),
+      ];
 
-      expect(headers['x-portkey-fallback-activated']).toBe('false');
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
+
+      expect((log.attempts[0] as RouterAttemptEntry).duration_ms).toBe(150);
+      expect((log.attempts[1] as RouterAttemptEntry).duration_ms).toBe(230);
+    });
+  });
+
+  describe('status_text 可选字段', () => {
+    it('should include status_text when present on failed attempts', () => {
+      const attempts: RouterAttemptEntry[] = [
+        makeFallbackEntry({
+          provider: 'openai',
+          status: 429,
+          ok: false,
+          is_fallback: false,
+          status_text: 'Too Many Requests',
+        }),
+        makeFallbackEntry({
+          provider: 'anthropic',
+          status: 200,
+          ok: true,
+          is_fallback: true,
+        }),
+      ];
+
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
+
+      expect((log.attempts[0] as RouterAttemptEntry).status_text).toBe(
+        'Too Many Requests'
+      );
+      expect(
+        (log.attempts[1] as RouterAttemptEntry).status_text
+      ).toBeUndefined();
+    });
+  });
+
+  describe('单目标成功场景', () => {
+    it('should produce log with single entry when first target succeeds', () => {
+      const attempts: RouterAttemptEntry[] = [
+        makeFallbackEntry({
+          provider: 'openai',
+          status: 200,
+          ok: true,
+          is_fallback: false,
+        }),
+      ];
+
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
+
+      expect(log.total).toBe(1);
+      expect(log.attempts).toHaveLength(1);
+      const entry = log.attempts[0] as RouterAttemptEntry;
+      expect(entry.is_fallback).toBe(false);
+      expect(entry.ok).toBe(true);
+    });
+  });
+
+  describe('全部失败场景', () => {
+    it('should log all failed attempts with correct fallback flags', () => {
+      const attempts: RouterAttemptEntry[] = [
+        makeFallbackEntry({
+          provider: 'openai',
+          status: 500,
+          ok: false,
+          is_fallback: false,
+        }),
+        makeFallbackEntry({
+          provider: 'anthropic',
+          status: 503,
+          ok: false,
+          is_fallback: true,
+        }),
+      ];
+
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
+
+      expect(log.total).toBe(2);
+      expect(
+        (log.attempts as RouterAttemptEntry[]).every((e) => e.ok === false)
+      ).toBe(true);
+      expect((log.attempts[0] as RouterAttemptEntry).is_fallback).toBe(false);
+      expect((log.attempts[1] as RouterAttemptEntry).is_fallback).toBe(true);
+    });
+  });
+
+  describe('旧 header 不再设置', () => {
+    it('should NOT include old fallback/attempt headers in the unified format', () => {
+      const attempts: RouterAttemptEntry[] = [
+        makeFallbackEntry({
+          provider: 'openai',
+          status: 500,
+          ok: false,
+          is_fallback: false,
+        }),
+        makeFallbackEntry({
+          provider: 'anthropic',
+          status: 200,
+          ok: true,
+          is_fallback: true,
+        }),
+      ];
+
+      const headers = buildFallbackAttemptLogHeader(attempts);
+
+      // Old headers must NOT be present
+      expect(headers['x-portkey-fallback-activated']).toBeUndefined();
       expect(headers['x-portkey-fallback-from']).toBeUndefined();
-      expect(headers['x-portkey-lb-weights']).toBeUndefined();
-    });
+      expect(headers['x-portkey-attempt-log']).toBeUndefined();
 
-    it('should set fallback-activated=false when strategyMode is undefined', () => {
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: '',
-        attempts: [{ provider: 'openai', status: 200, ok: true }],
-        fallbackActivated: false,
-      });
-
-      expect(headers['x-portkey-fallback-activated']).toBe('false');
+      // Only x-router-attempt-log should be present
+      expect(headers['x-router-attempt-log']).toBeDefined();
     });
   });
 
-  describe('Attempt log 多 target 尝试场景 (attempt-log)', () => {
-    it('should produce JSON attempt log with single successful attempt', () => {
-      const attempts = [{ provider: 'openai', status: 200, ok: true }];
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.SINGLE,
-        attempts,
-        fallbackActivated: false,
-      });
+  describe('Truncation (使用 truncateAttemptLog)', () => {
+    it('should use truncateAttemptLog for > 10 entries with _skip marker', () => {
+      const attempts: RouterAttemptEntry[] = Array.from(
+        { length: 15 },
+        (_, i) =>
+          makeFallbackEntry({
+            provider: `provider-${i}`,
+            status: i === 14 ? 200 : 500,
+            ok: i === 14,
+            is_fallback: i > 0,
+            duration_ms: 100 + i * 10,
+          })
+      );
 
-      expect(headers['x-portkey-attempt-log']).toBe(JSON.stringify(attempts));
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
+
+      expect(log.total).toBe(15);
+      // truncateAttemptLog: first 1 + _skip + last 3 = 5 items
+      expect(log.attempts).toHaveLength(5);
+
+      // First entry preserved
+      expect((log.attempts[0] as RouterAttemptEntry).provider).toBe(
+        'provider-0'
+      );
+      // Skip marker
+      expect((log.attempts[1] as { _skip: number })._skip).toBe(11);
+      // Last entry
+      expect((log.attempts[4] as RouterAttemptEntry).provider).toBe(
+        'provider-14'
+      );
+      expect((log.attempts[4] as RouterAttemptEntry).ok).toBe(true);
     });
 
-    it('should produce JSON attempt log with multiple fallback attempts', () => {
-      const attempts = [
-        { provider: 'openai', status: 500, ok: false },
-        { provider: 'azure', status: 429, ok: false },
-        { provider: 'anthropic', status: 200, ok: true },
-      ];
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.FALLBACK,
-        attempts,
-        fallbackActivated: true,
-        fallbackFrom: 'openai',
-      });
+    it('should NOT truncate when <= 10 entries', () => {
+      const attempts: RouterAttemptEntry[] = Array.from(
+        { length: 10 },
+        (_, i) =>
+          makeFallbackEntry({
+            provider: `provider-${i}`,
+            status: i === 9 ? 200 : 500,
+            ok: i === 9,
+            is_fallback: i > 0,
+          })
+      );
 
-      expect(headers['x-portkey-attempt-log']).toBe(JSON.stringify(attempts));
-    });
+      const headers = buildFallbackAttemptLogHeader(attempts);
+      const log: RouterAttemptLog = JSON.parse(headers['x-router-attempt-log']);
 
-    it('should handle all-failed attempts in attempt log', () => {
-      const attempts = [
-        { provider: 'openai', status: 500, ok: false },
-        { provider: 'anthropic', status: 503, ok: false },
-      ];
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.FALLBACK,
-        attempts,
-        fallbackActivated: true,
-        fallbackFrom: 'openai',
-      });
-
-      expect(headers['x-portkey-attempt-log']).toBe(JSON.stringify(attempts));
-      expect(headers['x-portkey-fallback-activated']).toBe('true');
-    });
-
-    it('should produce loadbalance attempt log with single selected target', () => {
-      const attempts = [{ provider: 'azure', status: 200, ok: true }];
-      const weights = { openai: 1, azure: 2, anthropic: 3 };
-      const headers = buildRoutingMetadataHeaders({
-        strategyMode: StrategyModes.LOADBALANCE,
-        attempts,
-        fallbackActivated: false,
-        weights,
-      });
-
-      expect(headers['x-portkey-attempt-log']).toBe(JSON.stringify(attempts));
-      expect(headers['x-portkey-lb-weights']).toBe(JSON.stringify(weights));
+      expect(log.total).toBe(10);
+      expect(log.attempts).toHaveLength(10);
+      expect(log.attempts.every((e: any) => !('_skip' in e))).toBe(true);
     });
   });
+});
 
-  describe('StrategyModes enum values', () => {
-    it('should have correct enum values matching handlerUtils usage', () => {
-      expect(StrategyModes.FALLBACK).toBe('fallback');
-      expect(StrategyModes.LOADBALANCE).toBe('loadbalance');
-      expect(StrategyModes.SINGLE).toBe('single');
-    });
+describe('UAG: Loadbalance 场景 (lb-weights)', () => {
+  it('should include lb-weights as JSON with weight distribution', () => {
+    // This test validates the loadbalance header format which is unchanged
+    const weights = { openai: 3, anthropic: 7 };
+    const headers: Record<string, string> = {};
+    headers['x-portkey-lb-weights'] = JSON.stringify(weights);
+
+    expect(headers['x-portkey-lb-weights']).toBe(JSON.stringify(weights));
+  });
+
+  it('should handle equal weights', () => {
+    const weights = { openai: 1, azure: 1, anthropic: 1 };
+    const headers: Record<string, string> = {};
+    headers['x-portkey-lb-weights'] = JSON.stringify(weights);
+
+    expect(headers['x-portkey-lb-weights']).toBe(JSON.stringify(weights));
+  });
+});
+
+describe('UAG: StrategyModes enum values', () => {
+  it('should have correct enum values matching handlerUtils usage', () => {
+    expect(StrategyModes.FALLBACK).toBe('fallback');
+    expect(StrategyModes.LOADBALANCE).toBe('loadbalance');
+    expect(StrategyModes.SINGLE).toBe('single');
   });
 });
 
