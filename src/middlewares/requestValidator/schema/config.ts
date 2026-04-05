@@ -6,7 +6,6 @@ import {
   TRITON,
   AZURE_OPEN_AI,
 } from '../../../globals';
-import { isValidCustomHost } from '..';
 
 export const configSchema: any = z
   .object({
@@ -152,18 +151,11 @@ export const configSchema: any = z
         "Invalid configuration. It must have either 'provider' and 'api_key', or 'strategy' and 'targets', or 'cache', or 'retry', or 'request_timeout'",
     }
   )
-  .refine(
-    (value) => {
-      const customHost = value.custom_host;
-      if (customHost && !isValidCustomHost(customHost)) {
-        return false;
-      }
-      return true;
-    },
-    {
-      message: 'Invalid custom host',
-    }
-  )
+  // custom_host validation is handled at the middleware level (requestValidator)
+  // where Hono Context is available for TRUSTED_CUSTOM_HOSTS lookup.
+  // Schema-level validation without Context rejects legitimate internal hosts
+  // (private IPs, .local/.internal TLDs) that admins configured in the control plane.
+  //
   // Validate Google Vertex AI specific fields
   .refine(
     (value) => {

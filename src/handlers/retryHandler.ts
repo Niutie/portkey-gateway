@@ -211,6 +211,24 @@ export const retryRequest = async (
       });
     }
   }
+  // Inject retry context headers into ALL failed responses so callers
+  // can always tell how many attempts were made and how long the total wait was.
+  if (lastResponse && lastResponse.status >= 300) {
+    const totalAttempts = (lastAttempt ?? 0) + 1;
+    const elapsedMs = Date.now() - start.getTime();
+    const headers = new Headers(lastResponse.headers);
+    headers.set('x-retry-attempts', String(totalAttempts));
+    headers.set('x-retry-elapsed-ms', String(elapsedMs));
+    if (timeout) {
+      headers.set('x-retry-per-attempt-timeout-ms', String(timeout));
+    }
+    lastResponse = new Response(lastResponse.body, {
+      status: lastResponse.status,
+      statusText: lastResponse.statusText,
+      headers,
+    });
+  }
+
   return {
     response: lastResponse as Response,
     attempt: lastAttempt,
