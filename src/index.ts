@@ -46,8 +46,10 @@ import { createCacheBackendsRedis } from './shared/services/cache';
 const app = new Hono();
 const runtime = getRuntimeKey();
 
-if (runtime === 'node' && process.env.REDIS_CONNECTION_STRING) {
-  createCacheBackendsRedis(process.env.REDIS_CONNECTION_STRING);
+const redisConnectionString =
+  process.env.REDIS_CONNECTION_STRING || process.env.REDIS_URL;
+if (runtime === 'node' && redisConnectionString) {
+  createCacheBackendsRedis(redisConnectionString);
 }
 /**
  * Middleware that conditionally applies compression middleware based on the runtime.

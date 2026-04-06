@@ -766,17 +766,20 @@ export async function tryTargetsRecursively(
       );
 
       // UAG: Sticky session — resolve target from cache or select new one
-      const stickyConfig = currentTarget.sticky_session;
+      const stickyConfig =
+        currentTarget.sticky_session || currentTarget.stickySession;
       let stickyHashValue: string | null = null;
       let stickyAgentKey: string | null = null;
       let selectedTargetIndex: number | null = null;
 
-      if (stickyConfig?.enabled && stickyConfig.hash_field) {
+      const stickyHashField =
+        stickyConfig?.hash_field || stickyConfig?.hashField;
+      if (stickyConfig?.enabled && stickyHashField) {
         try {
           const metadata = JSON.parse(
             requestHeaders[HEADER_KEYS.METADATA] ?? '{}'
           );
-          stickyHashValue = metadata[stickyConfig.hash_field] ?? null;
+          stickyHashValue = metadata[stickyHashField] ?? null;
         } catch {
           stickyHashValue = null;
         }
