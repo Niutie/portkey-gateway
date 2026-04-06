@@ -761,6 +761,19 @@ export async function tryTargetsRecursively(
           t.weight!;
       });
 
+      // UAG: Compute percentage snapshot alongside raw weights
+      const totalWeightForPct = currentTarget.targets.reduce(
+        (sum: number, t: Options) => sum + (t.weight || 1),
+        0
+      );
+      const pctSnapshot: Record<string, number> = {};
+      for (const [key, w] of Object.entries(weightSnapshot)) {
+        pctSnapshot[key] =
+          totalWeightForPct > 0
+            ? Math.round((w / totalWeightForPct) * 10000) / 100
+            : 0;
+      }
+
       let totalWeight = currentTarget.targets.reduce(
         (sum: number, provider: any) => sum + provider.weight,
         0
@@ -792,6 +805,10 @@ export async function tryTargetsRecursively(
           response.headers.set(
             'x-portkey-lb-weights',
             JSON.stringify(weightSnapshot)
+          );
+          response.headers.set(
+            'x-portkey-lb-weight-pcts',
+            JSON.stringify(pctSnapshot)
           );
         } catch (e) {
           // UAG: Swallow serialization errors to avoid breaking the request chain
