@@ -765,24 +765,85 @@ export async function tryTargetsRecursively(
         0
       );
 
-      let randomWeight = Math.random() * totalWeight;
-      for (const [index, provider] of currentTarget.targets.entries()) {
-        const originalIndex = provider.originalIndex || index;
-        if (randomWeight < provider.weight) {
-          currentJsonPath = currentJsonPath + `.targets[${originalIndex}]`;
-          response = await tryTargetsRecursively(
-            c,
-            provider,
-            request,
-            requestHeaders,
-            fn,
-            method,
-            currentJsonPath,
-            currentInheritedConfig
+      // UAG: Sticky session — resolve target from cache or select new one
+      const stickyConfig = currentTarget.sticky_session;
+      let stickyHashValue: string | null = null;
+      let stickyAgentKey: string | null = null;
+      let selectedTargetIndex: number | null = null;
+
+      if (stickyConfig?.enabled && stickyConfig.hash_field) {
+        try {
+          const metadata = JSON.parse(
+            requestHeaders[HEADER_KEYS.METADATA] ?? '{}'
           );
-          break;
+          stickyHashValue = metadata[stickyConfig.hash_field] ?? null;
+        } catch {
+          stickyHashValue = null;
         }
-        randomWeight -= provider.weight;
+
+        if (stickyHashValue) {
+          stickyAgentKey = requestHeaders['x-consumer-username'] || 'default';
+
+          const { getStickyTarget } = await import('../services/stickySession');
+          const cachedIndex = await getStickyTarget(
+            stickyAgentKey,
+            stickyHashValue
+          );
+          if (
+            cachedIndex !== null &&
+            cachedIndex >= 0 &&
+            cachedIndex < currentTarget.targets.length
+          ) {
+            selectedTargetIndex = cachedIndex;
+          }
+        }
+      }
+
+      // UAG: If no sticky hit, do weighted random selection
+      if (selectedTargetIndex === null) {
+        let randomWeight = Math.random() * totalWeight;
+        for (const [index, provider] of currentTarget.targets.entries()) {
+          if (randomWeight < provider.weight) {
+            selectedTargetIndex = index;
+            break;
+          }
+          randomWeight -= provider.weight;
+        }
+      }
+
+      // UAG: Route to selected target
+      if (selectedTargetIndex !== null) {
+        const provider = currentTarget.targets[selectedTargetIndex];
+        const originalIndex = provider.originalIndex || selectedTargetIndex;
+        currentJsonPath = currentJsonPath + `.targets[${originalIndex}]`;
+        response = await tryTargetsRecursively(
+          c,
+          provider,
+          request,
+          requestHeaders,
+          fn,
+          method,
+          currentJsonPath,
+          currentInheritedConfig
+        );
+
+        // UAG: Sticky session — cache mapping or invalidate on failure
+        if (stickyHashValue && stickyAgentKey && stickyConfig) {
+          const { setStickyTarget, clearStickyTarget } = await import(
+            '../services/stickySession'
+          );
+          if (response && response.ok) {
+            await setStickyTarget(
+              stickyAgentKey,
+              stickyHashValue,
+              selectedTargetIndex,
+              stickyConfig.ttl || 3600
+            );
+          } else if (response && !response.ok) {
+            // UAG: Target failed — invalidate mapping so next request re-selects
+            await clearStickyTarget(stickyAgentKey, stickyHashValue);
+          }
+        }
       }
 
       // UAG: Inject load balance weight snapshot header (Story 33.4)

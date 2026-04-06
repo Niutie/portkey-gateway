@@ -214,6 +214,12 @@ export interface Targets {
   /** provider option index picked based on weight in loadbalance mode */
   index?: number;
   cache?: CacheSettings | string;
+  /** UAG: Sticky session config for loadbalance mode */
+  sticky_session?: {
+    enabled: boolean;
+    hash_field: string; // metadata field name, e.g. "user_id"
+    ttl: number; // seconds
+  };
   targets?: Targets[];
 
   /** This is used to determine if the request should be transformed to formData Example: Stability V2 */
