@@ -11,7 +11,7 @@ export const GUARDRAIL_HEADER_ACTION = 'x-portkey-guardrail-action';
 // UAG: Maximum number of triggered plugin IDs to include (header size safety)
 const MAX_TRIGGERED_IDS = 10;
 
-export interface GuardrailHeaders {
+export interface GuardrailHeaders extends Record<string, string> {
   [GUARDRAIL_HEADER_VERDICT]: string;
   [GUARDRAIL_HEADER_TRIGGERED]: string;
   [GUARDRAIL_HEADER_ACTION]: string;
