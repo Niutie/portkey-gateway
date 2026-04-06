@@ -126,7 +126,13 @@ export const memoryCache = () => {
       !requestOptions[0].requestParams.stream
     ) {
       requestOptions = requestOptions[0];
-      if (requestOptions.cacheMode === 'simple') {
+      // Only cache successful (2xx) responses — never cache 4xx/5xx errors
+      const responseStatus = requestOptions.response?.status;
+      if (
+        requestOptions.cacheMode === 'simple' &&
+        responseStatus >= 200 &&
+        responseStatus < 300
+      ) {
         await putInCache(
           null,
           null,
