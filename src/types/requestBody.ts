@@ -154,6 +154,9 @@ export interface Options {
   anthropicVersion?: string;
   anthropicApiKey?: string;
 
+  // UAG: Authentication type for provider (e.g., 'oauth_token' for Bearer auth)
+  authType?: string;
+
   /** Fireworks finetune required fields */
   fireworksAccountId?: string;
   fireworksFileLength?: string;

@@ -6,9 +6,14 @@ const AnthropicAPIConfig: ProviderAPIConfig = {
   headers: ({ providerOptions, fn, gatewayRequestBody }) => {
     const apiKey =
       providerOptions.apiKey || providerOptions.anthropicApiKey || '';
-    const headers: Record<string, string> = {
-      'X-API-Key': apiKey,
-    };
+    const headers: Record<string, string> = {};
+
+    // UAG: OAuth token 使用 Bearer 认证，API Key 使用 X-API-Key 认证
+    if (providerOptions.authType === 'oauth_token') {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    } else {
+      headers['X-API-Key'] = apiKey;
+    }
 
     // Accept anthropic_beta and anthropic_version in body to support enviroments which cannot send it in headers.
     const betaHeader =
