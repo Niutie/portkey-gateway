@@ -1169,7 +1169,16 @@ export function constructConfigFromRequestHeaders(
   };
 
   if (requestHeaders[`x-${POWERED_BY}-config`]) {
-    let parsedConfigJson = JSON.parse(requestHeaders[`x-${POWERED_BY}-config`]);
+    // Node.js HTTP parser decodes header bytes as Latin-1 (ISO 8859-1).
+    // Re-encode to recover the original UTF-8 bytes for non-ASCII content
+    // (e.g. CJK characters in guardrail keywords).
+    let configHeaderValue = requestHeaders[`x-${POWERED_BY}-config`];
+    if (typeof Buffer !== 'undefined') {
+      configHeaderValue = Buffer.from(configHeaderValue, 'latin1').toString(
+        'utf-8'
+      );
+    }
+    let parsedConfigJson = JSON.parse(configHeaderValue);
     parsedConfigJson.default_input_guardrails = defaultsConfig.input_guardrails;
     parsedConfigJson.default_output_guardrails =
       defaultsConfig.output_guardrails;

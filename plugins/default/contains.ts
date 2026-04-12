@@ -18,6 +18,7 @@ export const handler: PluginHandler = async (
   try {
     const words = parameters.words;
     const operator = parameters.operator;
+    const not = parameters.not || false;
 
     let responseText = getText(context, eventType);
 
@@ -38,6 +39,11 @@ export const handler: PluginHandler = async (
       case 'none':
         verdict = foundWords.length === 0;
         break;
+    }
+
+    // Invert verdict when `not` is set (aligns detection semantics with deny logic)
+    if (not) {
+      verdict = !verdict;
     }
 
     data = {
