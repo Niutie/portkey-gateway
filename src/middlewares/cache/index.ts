@@ -117,33 +117,35 @@ export const memoryCache = () => {
 
     await next();
 
-    let requestOptions = c.get('requestOptions');
+    const allRequestOptions = c.get('requestOptions');
 
     if (
-      requestOptions &&
-      Array.isArray(requestOptions) &&
-      requestOptions.length > 0 &&
-      !requestOptions[0].requestParams.stream
+      allRequestOptions &&
+      Array.isArray(allRequestOptions) &&
+      allRequestOptions.length > 0 &&
+      !allRequestOptions[0].requestParams.stream
     ) {
-      requestOptions = requestOptions[0];
-      // Only cache successful (2xx) responses — never cache 4xx/5xx errors
-      const responseStatus = requestOptions.response?.status;
-      if (
-        requestOptions.cacheMode === 'simple' &&
-        responseStatus >= 200 &&
-        responseStatus < 300
-      ) {
+      // Find the last successful (2xx) attempt — fallback/retry may have
+      // failed on earlier providers before reaching a healthy one.
+      const successfulOption = allRequestOptions
+        .slice()
+        .reverse()
+        .find(
+          (opt: any) =>
+            opt.response?.status >= 200 && opt.response?.status < 300
+        );
+      if (successfulOption && successfulOption.cacheMode === 'simple') {
         await putInCache(
           null,
           null,
-          requestOptions.transformedRequest.body,
-          await requestOptions.response.clone().json(),
-          requestOptions.providerOptions.rubeusURL,
+          successfulOption.transformedRequest.body,
+          await successfulOption.response.clone().json(),
+          successfulOption.providerOptions.rubeusURL,
           '',
           null,
           new Date().getTime() +
-            (requestOptions.cacheMaxAge
-              ? requestOptions.cacheMaxAge * 1000
+            (successfulOption.cacheMaxAge
+              ? successfulOption.cacheMaxAge * 1000
               : 24 * 60 * 60 * 1000),
           namespace
         );
