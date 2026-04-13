@@ -3,20 +3,30 @@ import AnthropicAPIConfig from './api';
 import { Options, Params } from '../../types/requestBody';
 import { convertKeysToCamelCase } from '../../utils';
 
-// Minimal mock for Hono Context (headers function only needs providerOptions and gatewayRequestBody)
-const mockContext = {} as any;
+// UAG: Build a mock Hono Context whose req.header(name) resolves from the provided map (lowercase keys).
+const makeContext = (clientHeaders: Record<string, string> = {}): any => {
+  const lower: Record<string, string> = {};
+  for (const k of Object.keys(clientHeaders))
+    lower[k.toLowerCase()] = clientHeaders[k];
+  return {
+    req: {
+      header: (name?: string) => (name ? lower[name.toLowerCase()] : undefined),
+    },
+  };
+};
 
 describe('AnthropicAPIConfig.headers', () => {
   const callHeaders = (
     providerOptions: Partial<Options> & { provider?: string },
-    gatewayRequestBody?: Partial<Params>
+    gatewayRequestBody?: Partial<Params>,
+    clientHeaders?: Record<string, string>
   ) => {
     const opts: Options = {
       provider: 'anthropic',
       ...providerOptions,
     };
     return AnthropicAPIConfig.headers({
-      c: mockContext,
+      c: makeContext(clientHeaders),
       providerOptions: opts,
       fn: 'chatComplete',
       transformedRequestBody: {},
@@ -161,6 +171,126 @@ describe('AnthropicAPIConfig.headers', () => {
       });
 
       expect(headers['Authorization']).toBe('Bearer sk-ant-oat01-fallback');
+    });
+  });
+
+  // UAG: Story 48.5 — OAuth default beta header and client-header passthrough
+  describe('AC5: OAuth default beta is oauth-2025-04-20', () => {
+    it('should use oauth-2025-04-20 as default anthropic-beta when authType=oauth_token and no overrides', () => {
+      const headers = callHeaders({
+        apiKey: 'sk-ant-oat01-test',
+        authType: 'oauth_token',
+      });
+
+      expect(headers['anthropic-beta']).toBe('oauth-2025-04-20');
+      expect(headers['Authorization']).toBe('Bearer sk-ant-oat01-test');
+    });
+
+    it('should still use messages-2023-12-15 default for API Key path (regression)', () => {
+      const headers = callHeaders({
+        apiKey: 'sk-ant-api03-test',
+      });
+
+      expect(headers['anthropic-beta']).toBe('messages-2023-12-15');
+    });
+
+    it('should still use messages-2023-12-15 default when authType is explicit api_key (regression)', () => {
+      const headers = callHeaders({
+        apiKey: 'sk-ant-api03-test',
+        authType: 'api_key',
+      });
+
+      expect(headers['anthropic-beta']).toBe('messages-2023-12-15');
+    });
+  });
+
+  describe('AC6: client-sent anthropic-beta header is forwarded', () => {
+    it('should forward client anthropic-beta header when providerOptions.anthropicBeta is absent (OAuth path)', () => {
+      const headers = callHeaders(
+        { apiKey: 'sk-ant-oat01-test', authType: 'oauth_token' },
+        undefined,
+        { 'anthropic-beta': 'oauth-2025-04-20,prompt-caching-2024-07-31' }
+      );
+
+      expect(headers['anthropic-beta']).toBe(
+        'oauth-2025-04-20,prompt-caching-2024-07-31'
+      );
+    });
+
+    it('should forward client anthropic-beta header for API Key path too', () => {
+      const headers = callHeaders({ apiKey: 'sk-ant-api03-test' }, undefined, {
+        'anthropic-beta': 'tools-2024-04-04',
+      });
+
+      expect(headers['anthropic-beta']).toBe('tools-2024-04-04');
+    });
+
+    it('should prefer providerOptions.anthropicBeta over client header', () => {
+      const headers = callHeaders(
+        {
+          apiKey: 'sk-ant-oat01-test',
+          authType: 'oauth_token',
+          anthropicBeta: 'provider-option-wins',
+        },
+        undefined,
+        { 'anthropic-beta': 'client-header-loses' }
+      );
+
+      expect(headers['anthropic-beta']).toBe('provider-option-wins');
+    });
+
+    it('should prefer client header over gatewayRequestBody.anthropic_beta', () => {
+      const headers = callHeaders(
+        { apiKey: 'sk-ant-oat01-test', authType: 'oauth_token' },
+        { anthropic_beta: 'body-loses' },
+        { 'anthropic-beta': 'client-header-wins' }
+      );
+
+      expect(headers['anthropic-beta']).toBe('client-header-wins');
+    });
+
+    it('should fall through to gatewayRequestBody when no client header is set', () => {
+      const headers = callHeaders(
+        { apiKey: 'sk-ant-oat01-test', authType: 'oauth_token' },
+        { anthropic_beta: 'body-beta-wins' }
+      );
+
+      expect(headers['anthropic-beta']).toBe('body-beta-wins');
+    });
+  });
+
+  describe('AC7: case-insensitive client header lookup', () => {
+    it('should match client anthropic-beta header regardless of case', () => {
+      const headers = callHeaders(
+        { apiKey: 'sk-ant-oat01-test', authType: 'oauth_token' },
+        undefined,
+        { 'Anthropic-Beta': 'case-insensitive-match' }
+      );
+
+      expect(headers['anthropic-beta']).toBe('case-insensitive-match');
+    });
+  });
+
+  // UAG: review-patch — empty client header value must NOT propagate as ""
+  describe('AC8: empty-string client anthropic-beta header falls through to default', () => {
+    it('should ignore empty client anthropic-beta and use OAuth default', () => {
+      const headers = callHeaders(
+        { apiKey: 'sk-ant-oat01-test', authType: 'oauth_token' },
+        undefined,
+        { 'anthropic-beta': '' }
+      );
+
+      expect(headers['anthropic-beta']).toBe('oauth-2025-04-20');
+    });
+
+    it('should ignore empty client anthropic-beta and fall through to body field if present', () => {
+      const headers = callHeaders(
+        { apiKey: 'sk-ant-oat01-test', authType: 'oauth_token' },
+        { anthropic_beta: 'body-wins-over-empty-client' },
+        { 'anthropic-beta': '' }
+      );
+
+      expect(headers['anthropic-beta']).toBe('body-wins-over-empty-client');
     });
   });
 });
