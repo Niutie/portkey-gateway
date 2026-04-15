@@ -1,4 +1,6 @@
-// UAG: Unit tests for Anthropic provider headers — Bearer token auth support
+// UAG: Unit tests for Anthropic provider headers — unified X-API-Key wire auth
+//      (Story 48.5's Bearer branch was reverted 2026-04-15 after empirical evidence
+//      showed sk-ant-oat01-* setup-tokens only authenticate via X-API-Key).
 import AnthropicAPIConfig from './api';
 import { Options, Params } from '../../types/requestBody';
 import { convertKeysToCamelCase } from '../../utils';
@@ -35,15 +37,17 @@ describe('AnthropicAPIConfig.headers', () => {
     }) as Record<string, string>;
   };
 
-  describe('AC1: OAuth token uses Authorization: Bearer header', () => {
-    it('should use Authorization: Bearer when authType is oauth_token', () => {
+  // UAG: 2026-04-15 fix — OAuth setup-token 经实测只认 X-API-Key（Bearer 路径被 Anthropic
+  // 以 `401 OAuth authentication is currently not supported.` 拒绝）；与 Story 48.5 原假设相反
+  describe('AC1: OAuth token uses X-API-Key header (wire unified with API Key)', () => {
+    it('should use X-API-Key when authType is oauth_token', () => {
       const headers = callHeaders({
         apiKey: 'sk-ant-oat01-test-token',
         authType: 'oauth_token',
       });
 
-      expect(headers['Authorization']).toBe('Bearer sk-ant-oat01-test-token');
-      expect(headers['X-API-Key']).toBeUndefined();
+      expect(headers['X-API-Key']).toBe('sk-ant-oat01-test-token');
+      expect(headers['Authorization']).toBeUndefined();
     });
   });
 
@@ -89,7 +93,8 @@ describe('AnthropicAPIConfig.headers', () => {
 
       expect(headers['anthropic-beta']).toBe('custom-beta-2024');
       expect(headers['anthropic-version']).toBe('2024-01-01');
-      expect(headers['Authorization']).toBe('Bearer sk-ant-oat01-test-token');
+      expect(headers['X-API-Key']).toBe('sk-ant-oat01-test-token');
+      expect(headers['Authorization']).toBeUndefined();
     });
 
     it('should set anthropic-beta and anthropic-version with default api_key auth', () => {
@@ -164,13 +169,14 @@ describe('AnthropicAPIConfig.headers', () => {
       expect(headers['X-API-Key']).toBe('fallback-key');
     });
 
-    it('should use anthropicApiKey for Bearer auth when apiKey is missing', () => {
+    it('should use anthropicApiKey as X-API-Key when apiKey is missing (OAuth path)', () => {
       const headers = callHeaders({
         anthropicApiKey: 'sk-ant-oat01-fallback',
         authType: 'oauth_token',
       });
 
-      expect(headers['Authorization']).toBe('Bearer sk-ant-oat01-fallback');
+      expect(headers['X-API-Key']).toBe('sk-ant-oat01-fallback');
+      expect(headers['Authorization']).toBeUndefined();
     });
   });
 
@@ -183,7 +189,8 @@ describe('AnthropicAPIConfig.headers', () => {
       });
 
       expect(headers['anthropic-beta']).toBe('oauth-2025-04-20');
-      expect(headers['Authorization']).toBe('Bearer sk-ant-oat01-test');
+      expect(headers['X-API-Key']).toBe('sk-ant-oat01-test');
+      expect(headers['Authorization']).toBeUndefined();
     });
 
     it('should still use messages-2023-12-15 default for API Key path (regression)', () => {
