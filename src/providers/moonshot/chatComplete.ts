@@ -53,6 +53,15 @@ export const MoonshotChatCompleteConfig: ProviderConfig = {
     param: 'stream',
     default: false,
   },
+  tools: {
+    param: 'tools',
+  },
+  tool_choice: {
+    param: 'tool_choice',
+  },
+  parallel_tool_calls: {
+    param: 'parallel_tool_calls',
+  },
 };
 
 interface MoonshotChatCompleteResponse extends ChatCompletionResponse {
@@ -84,6 +93,7 @@ interface MoonshotStreamChunk {
     delta: {
       role?: string | null;
       content?: string;
+      tool_calls?: any[];
     };
     index: number;
     finish_reason: string | null;
@@ -118,6 +128,7 @@ export const MoonshotChatCompleteResponseTransform: (
         message: {
           role: c.message.role,
           content: c.message.content,
+          ...(c.message.tool_calls && { tool_calls: c.message.tool_calls }),
         },
         finish_reason: c.finish_reason,
       })),
