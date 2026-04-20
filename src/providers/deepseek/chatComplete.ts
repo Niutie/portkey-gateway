@@ -85,6 +85,15 @@ export const DeepSeekChatCompleteConfig: ProviderConfig = {
     min: 0,
     max: 20,
   },
+  tools: {
+    param: 'tools',
+  },
+  tool_choice: {
+    param: 'tool_choice',
+  },
+  parallel_tool_calls: {
+    param: 'parallel_tool_calls',
+  },
 };
 
 interface DeepSeekChatCompleteResponse extends ChatCompletionResponse {
@@ -121,6 +130,7 @@ interface DeepSeekStreamChunk {
     delta: {
       role?: string | null;
       content?: string;
+      tool_calls?: any[];
     };
     index: number;
     finish_reason: string | null;
@@ -162,6 +172,7 @@ export const DeepSeekChatCompleteResponseTransform: (
         message: {
           role: c.message.role,
           content: c.message.content,
+          ...(c.message.tool_calls && { tool_calls: c.message.tool_calls }),
         },
         finish_reason: transformFinishReason(
           c.finish_reason as DEEPSEEK_STOP_REASON,
