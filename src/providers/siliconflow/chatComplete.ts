@@ -66,6 +66,18 @@ export const SiliconFlowChatCompleteConfig: ProviderConfig = {
     min: -2,
     max: 2,
   },
+  tools: {
+    param: 'tools',
+  },
+  tool_choice: {
+    param: 'tool_choice',
+  },
+  response_format: {
+    param: 'response_format',
+  },
+  stream_options: {
+    param: 'stream_options',
+  },
 };
 
 export const SiliconFlowErrorResponseTransform: (

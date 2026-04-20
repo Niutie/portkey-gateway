@@ -47,6 +47,18 @@ export const ZhipuChatCompleteConfig: ProviderConfig = {
     param: 'stream',
     default: false,
   },
+  tools: {
+    param: 'tools',
+  },
+  tool_choice: {
+    param: 'tool_choice',
+  },
+  response_format: {
+    param: 'response_format',
+  },
+  stream_options: {
+    param: 'stream_options',
+  },
 };
 
 interface ZhipuChatCompleteResponse extends ChatCompletionResponse {
@@ -78,10 +90,16 @@ interface ZhipuStreamChunk {
     delta: {
       role?: string | null;
       content?: string;
+      tool_calls?: any[];
     };
     index: number;
     finish_reason: string | null;
   }[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
 }
 
 export const ZhipuChatCompleteResponseTransform: (
@@ -109,10 +127,7 @@ export const ZhipuChatCompleteResponseTransform: (
       provider: ZHIPU,
       choices: response.choices.map((c) => ({
         index: c.index,
-        message: {
-          role: c.message.role,
-          content: c.message.content,
-        },
+        message: c.message,
         finish_reason: c.finish_reason,
       })),
       usage: {
@@ -136,20 +151,26 @@ export const ZhipuChatCompleteStreamChunkTransform: (
     return `data: ${chunk}\n\n`;
   }
   const parsedChunk: ZhipuStreamChunk = JSON.parse(chunk);
-  return (
-    `data: ${JSON.stringify({
-      id: parsedChunk.id,
-      object: parsedChunk.object,
-      created: parsedChunk.created,
-      model: parsedChunk.model,
-      provider: ZHIPU,
-      choices: [
-        {
-          index: parsedChunk.choices[0].index,
-          delta: parsedChunk.choices[0].delta,
-          finish_reason: parsedChunk.choices[0].finish_reason,
-        },
-      ],
-    })}` + '\n\n'
-  );
+  const result: Record<string, any> = {
+    id: parsedChunk.id,
+    object: parsedChunk.object,
+    created: parsedChunk.created,
+    model: parsedChunk.model,
+    provider: ZHIPU,
+  };
+  if (parsedChunk.choices && parsedChunk.choices.length > 0) {
+    result.choices = [
+      {
+        index: parsedChunk.choices[0].index,
+        delta: parsedChunk.choices[0].delta,
+        finish_reason: parsedChunk.choices[0].finish_reason,
+      },
+    ];
+  } else {
+    result.choices = [];
+  }
+  if (parsedChunk.usage) {
+    result.usage = parsedChunk.usage;
+  }
+  return `data: ${JSON.stringify(result)}` + '\n\n';
 };
