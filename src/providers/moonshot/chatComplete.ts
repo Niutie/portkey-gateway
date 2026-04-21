@@ -9,6 +9,7 @@ import {
 import {
   generateErrorResponse,
   generateInvalidProviderResponseError,
+  normalizeToolParameters,
 } from '../utils';
 
 export const MoonshotChatCompleteConfig: ProviderConfig = {
@@ -55,6 +56,7 @@ export const MoonshotChatCompleteConfig: ProviderConfig = {
   },
   tools: {
     param: 'tools',
+    transform: (params: Params) => normalizeToolParameters(params.tools as any),
   },
   tool_choice: {
     param: 'tool_choice',
