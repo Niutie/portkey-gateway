@@ -74,6 +74,11 @@ import OracleConfig from './oracle';
 import IOIntelligenceConfig from './iointelligence';
 import AIBadgrConfig from './aibadgr';
 import OVHcloudConfig from './ovhcloud';
+import {
+  OpenAICompatMessagesConfig,
+  openaiToAnthropicMessagesResponse,
+  openaiStreamToAnthropicMessagesStream,
+} from './open-ai-base/messagesCompat';
 
 const Providers: { [key: string]: ProviderConfigs } = {
   openai: OpenAIConfig,
@@ -149,5 +154,47 @@ const Providers: { [key: string]: ProviderConfigs } = {
   aibadgr: AIBadgrConfig,
   ovhcloud: OVHcloudConfig,
 };
+
+// ---------------------------------------------------------------------------
+// Auto-inject Anthropic Messages compat for OpenAI-compatible providers.
+// Any provider with `chatComplete` but without native `messages` support
+// gets the shared Anthropic→OpenAI cross-format adapter, so /v1/messages
+// routes work for all OpenAI-compatible providers out of the box.
+// ---------------------------------------------------------------------------
+for (const [providerName, config] of Object.entries(Providers)) {
+  // Skip providers that already have native messages support or use getConfig
+  if (config.messages || config.getConfig) continue;
+  // Skip providers without chatComplete (e.g. embed-only, image-only)
+  if (!config.chatComplete) continue;
+
+  // Inject messages request config
+  config.messages = OpenAICompatMessagesConfig;
+
+  // Inject response transforms
+  if (!config.responseTransforms) {
+    config.responseTransforms = {};
+  }
+  if (!config.responseTransforms.messages) {
+    config.responseTransforms.messages =
+      openaiToAnthropicMessagesResponse(providerName);
+  }
+  if (!config.responseTransforms['stream-messages']) {
+    config.responseTransforms['stream-messages'] =
+      openaiStreamToAnthropicMessagesStream(providerName);
+  }
+
+  // Wrap getEndpoint to handle 'messages' → chatComplete endpoint
+  const originalGetEndpoint = config.api.getEndpoint;
+  config.api.getEndpoint = (args: any) => {
+    if (args.fn === 'messages') {
+      const result = originalGetEndpoint(args);
+      if (!result) {
+        return originalGetEndpoint({ ...args, fn: 'chatComplete' });
+      }
+      return result;
+    }
+    return originalGetEndpoint(args);
+  };
+}
 
 export default Providers;

@@ -154,7 +154,9 @@ export interface Options {
   anthropicVersion?: string;
   anthropicApiKey?: string;
 
-  // UAG: Authentication type for provider (e.g., 'oauth_token' for Bearer auth)
+  // UAG: Provider authentication type marker. For Anthropic, 'oauth_token' only
+  // switches the default anthropic-beta (oauth-2025-04-20); wire-level auth is
+  // unified to X-API-Key for both 'oauth_token' and 'api_key' (see anthropic/api.ts).
   authType?: string;
 
   /** Fireworks finetune required fields */
