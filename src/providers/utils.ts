@@ -63,6 +63,49 @@ export function splitString(input: string, separator: string): SplitResult {
   };
 }
 
+function normalizeParameterSchema(schema: any): any {
+  if (
+    !schema ||
+    typeof schema !== 'object' ||
+    Object.keys(schema).length === 0
+  ) {
+    return { type: 'object', properties: {} };
+  }
+  const result = { ...schema };
+  if (!result.type) {
+    result.type = 'object';
+  }
+  if (result.type === 'object' && !result.properties) {
+    result.properties = {};
+  }
+  if ('required' in result && !Array.isArray(result.required)) {
+    result.required = [];
+  }
+  return result;
+}
+
+export function normalizeToolParameters(tools: any): any[] | undefined {
+  if (!tools || !Array.isArray(tools)) return undefined;
+  return tools.map((tool: any) => {
+    if (tool?.type === 'function' && tool?.function) {
+      return {
+        ...tool,
+        function: {
+          ...tool.function,
+          parameters: normalizeParameterSchema(tool.function.parameters),
+        },
+      };
+    }
+    if (tool?.name) {
+      return {
+        ...tool,
+        input_schema: normalizeParameterSchema(tool.input_schema),
+      };
+    }
+    return tool;
+  });
+}
+
 /*
   Transforms the finish reason from the provider to the finish reason used by the OpenAI API.
   If the finish reason is not found in the map, it will return the stop reason.

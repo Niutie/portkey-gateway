@@ -31,7 +31,10 @@ import {
 import { Params } from '../../types/requestBody';
 import { ErrorResponse, ProviderConfig } from '../types';
 import { OpenAIErrorResponseTransform } from '../openai/utils';
-import { generateInvalidProviderResponseError } from '../utils';
+import {
+  generateInvalidProviderResponseError,
+  normalizeToolParameters,
+} from '../utils';
 
 // ---------------------------------------------------------------------------
 // Request transformation helpers
@@ -181,7 +184,8 @@ function flattenContent(content: any): string {
  */
 function transformTools(params: any): any[] | undefined {
   if (!params.tools || !Array.isArray(params.tools)) return undefined;
-  return params.tools.map((tool: any) => ({
+  const normalized = normalizeToolParameters(params.tools);
+  return (normalized ?? []).map((tool: any) => ({
     type: 'function',
     function: {
       name: tool.name,

@@ -9,6 +9,7 @@ import {
 import {
   generateErrorResponse,
   generateInvalidProviderResponseError,
+  normalizeToolParameters,
   transformFinishReason,
 } from '../utils';
 import { DEEPSEEK_STOP_REASON } from './types';
@@ -87,6 +88,7 @@ export const DeepSeekChatCompleteConfig: ProviderConfig = {
   },
   tools: {
     param: 'tools',
+    transform: (params: Params) => normalizeToolParameters(params.tools as any),
   },
   tool_choice: {
     param: 'tool_choice',
