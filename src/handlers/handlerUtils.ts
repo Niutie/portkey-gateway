@@ -771,6 +771,7 @@ export async function tryTargetsRecursively(
       let stickyHashValue: string | null = null;
       let stickyAgentKey: string | null = null;
       let selectedTargetIndex: number | null = null;
+      let stickyWasHit = false;
 
       const stickyHashField =
         stickyConfig?.hash_field || stickyConfig?.hashField;
@@ -798,6 +799,7 @@ export async function tryTargetsRecursively(
             cachedIndex < currentTarget.targets.length
           ) {
             selectedTargetIndex = cachedIndex;
+            stickyWasHit = true;
           }
         }
       }
@@ -860,6 +862,16 @@ export async function tryTargetsRecursively(
             'x-portkey-lb-weight-pcts',
             JSON.stringify(pctSnapshot)
           );
+          // UAG: Sticky session observability headers
+          if (stickyConfig?.enabled && stickyHashField) {
+            response.headers.set('x-portkey-sticky-hit', String(stickyWasHit));
+            if (stickyHashValue) {
+              response.headers.set(
+                'x-portkey-sticky-key',
+                `${stickyHashField}=${stickyHashValue}`
+              );
+            }
+          }
         } catch (e) {
           // UAG: Swallow serialization errors to avoid breaking the request chain
         }
