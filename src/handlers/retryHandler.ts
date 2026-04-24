@@ -6,6 +6,7 @@ import { MAX_RETRY_LIMIT_MS, POSSIBLE_RETRY_STATUS_HEADERS } from '../globals';
  */
 export interface RouterAttemptEntry {
   provider: string;
+  provider_type?: string;
   status: number;
   ok: boolean;
   duration_ms: number;

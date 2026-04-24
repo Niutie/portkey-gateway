@@ -686,13 +686,20 @@ export async function tryTargetsRecursively(
 
         // UAG: Collect attempt result for unified route decision metadata
         const entry: RouterAttemptEntry = {
-          provider: target.provider || `target-${originalIndex}`,
+          provider:
+            target.providerType ||
+            target.provider_type ||
+            target.provider ||
+            `target-${originalIndex}`,
           status: response?.status || 0,
           ok: response?.ok || false,
           duration_ms,
           is_retry: false, // retries are tracked by retryHandler, not fallback loop
           is_fallback: index > 0,
         };
+        if (target.providerType || target.provider_type) {
+          entry.provider_type = target.providerType || target.provider_type;
+        }
         // Include HTTP reason phrase for failed attempts (e.g., "Too Many Requests")
         if (!response?.ok && response?.statusText) {
           entry.status_text = response.statusText;
@@ -726,6 +733,14 @@ export async function tryTargetsRecursively(
             'x-router-attempt-log',
             JSON.stringify(routerLog)
           );
+          // UAG: Set provider_type from the last successful attempt
+          const successfulAttempt = [...attemptLog].reverse().find((a) => a.ok);
+          if (successfulAttempt?.provider_type) {
+            response.headers.set(
+              'x-portkey-provider-type',
+              successfulAttempt.provider_type
+            );
+          }
         } catch (e) {
           // UAG: Swallow serialization errors to avoid breaking the request chain
         }
@@ -743,8 +758,12 @@ export async function tryTargetsRecursively(
       // UAG: Capture weight snapshot before selection for route decision metadata (Story 33.4)
       const weightSnapshot: Record<string, number> = {};
       currentTarget.targets.forEach((t: Options, i: number) => {
-        weightSnapshot[t.provider || `target-${t.originalIndex || i}`] =
-          t.weight!;
+        const providerKey =
+          t.providerType ||
+          t.provider_type ||
+          t.provider ||
+          `target-${t.originalIndex || i}`;
+        weightSnapshot[providerKey] = t.weight!;
       });
 
       // UAG: Compute percentage snapshot alongside raw weights
@@ -862,6 +881,15 @@ export async function tryTargetsRecursively(
             'x-portkey-lb-weight-pcts',
             JSON.stringify(pctSnapshot)
           );
+          // UAG: Set provider_type from selected target
+          const selectedPT =
+            selectedTargetIndex !== null
+              ? currentTarget.targets[selectedTargetIndex]?.providerType ||
+                currentTarget.targets[selectedTargetIndex]?.provider_type
+              : undefined;
+          if (selectedPT) {
+            response.headers.set('x-portkey-provider-type', selectedPT);
+          }
           // UAG: Sticky session observability headers
           if (stickyConfig?.enabled && stickyHashField) {
             response.headers.set('x-portkey-sticky-hit', String(stickyWasHit));
@@ -918,6 +946,11 @@ export async function tryTargetsRecursively(
         `${currentJsonPath}.targets[${originalIndex}]`,
         currentInheritedConfig
       );
+      const conditionalPT =
+        finalTarget?.providerType || finalTarget?.provider_type;
+      if (response && conditionalPT) {
+        response.headers.set('x-portkey-provider-type', conditionalPT);
+      }
       break;
     }
 
@@ -933,6 +966,12 @@ export async function tryTargetsRecursively(
         `${currentJsonPath}.targets[${originalIndex}]`,
         currentInheritedConfig
       );
+      const singlePT =
+        currentTarget.targets[0]?.providerType ||
+        currentTarget.targets[0]?.provider_type;
+      if (response && singlePT) {
+        response.headers.set('x-portkey-provider-type', singlePT);
+      }
       break;
 
     default:

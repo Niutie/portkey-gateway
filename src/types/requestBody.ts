@@ -45,6 +45,9 @@ interface Strategy {
 export interface Options {
   /** The name of the provider. */
   provider: string;
+  /** The original provider type before slug normalization (e.g. dashscope-intl). */
+  provider_type?: string;
+  providerType?: string;
   /** The name of the API key for the provider. */
   virtualKey?: string;
   /** The API key for the provider. */
@@ -233,6 +236,8 @@ export interface Targets {
   defaultInputGuardrails?: HookObject[];
   defaultOutputGuardrails?: HookObject[];
   originalIndex?: number;
+  provider_type?: string;
+  providerType?: string;
 }
 
 /**
