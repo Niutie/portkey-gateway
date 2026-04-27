@@ -9,6 +9,7 @@ import {
   GOOGLE_VERTEX_AI,
 } from '../globals';
 import { HookSpan } from '../middlewares/hooks';
+import { filterHookResultsByExposeDetail } from '../middlewares/hooks/types';
 import { VertexLlamaChatCompleteStreamChunkTransform } from '../providers/google-vertex-ai/chatComplete';
 import { OpenAIChatCompleteResponse } from '../providers/openai/chatComplete';
 import { OpenAICompleteResponse } from '../providers/openai/complete';
@@ -479,16 +480,19 @@ const constructHookResultChunk = (
   hooksResult: HookSpan['hooksResult'],
   fn: endpointStrings
 ) => {
+  const filteredResults = filterHookResultsByExposeDetail(
+    hooksResult.beforeRequestHooksResult
+  );
   if (fn === 'messages') {
     return `event: hook_results\ndata: ${JSON.stringify({
       hook_results: {
-        before_request_hooks: hooksResult.beforeRequestHooksResult,
+        before_request_hooks: filteredResults,
       },
     })}\n\n`;
   }
   return `data: ${JSON.stringify({
     hook_results: {
-      before_request_hooks: hooksResult.beforeRequestHooksResult,
+      before_request_hooks: filteredResults,
     },
   })}\n\n`;
 };

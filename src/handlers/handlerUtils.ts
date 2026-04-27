@@ -32,7 +32,10 @@ import { HookSpan } from '../middlewares/hooks';
 import { ConditionalRouter } from '../services/conditionalRouter';
 import { RouterError } from '../errors/RouterError';
 import { GatewayError } from '../errors/GatewayError';
-import { HookType } from '../middlewares/hooks/types';
+import {
+  HookType,
+  filterHookResultsByExposeDetail,
+} from '../middlewares/hooks/types';
 
 // Services
 import { CacheResponseObject, CacheService } from './services/cacheService';
@@ -256,6 +259,7 @@ export function convertHooksShorthand(
       'type',
       'guardrail_version_id',
       'sequential',
+      'exposeDetail',
     ].forEach((key) => {
       if (hook.hasOwnProperty(key)) {
         hooksObject[key] = hook[key];
@@ -1525,6 +1529,9 @@ export async function beforeRequestHookHandler(
     isTransformed = span.getContext().request.isTransformed;
 
     if (hooksResult.shouldDeny) {
+      const filteredResults = filterHookResultsByExposeDetail(
+        hooksResult.results
+      );
       return {
         response: new Response(
           JSON.stringify({
@@ -1536,7 +1543,7 @@ export async function beforeRequestHookHandler(
               code: null,
             },
             hook_results: {
-              before_request_hooks: hooksResult.results,
+              before_request_hooks: filteredResults,
               after_request_hooks: [],
             },
           }),

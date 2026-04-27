@@ -442,6 +442,10 @@ export class HooksManager {
       hookResult.deny = false;
     }
 
+    if (hook.exposeDetail) {
+      hookResult.exposeDetail = true;
+    }
+
     span.addHookResult(hook.eventType, hookResult);
     return hookResult;
   }

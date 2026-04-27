@@ -23,6 +23,7 @@ export interface HookObject {
   onFail?: HookOnFailObject;
   onSuccess?: HookOnSuccessObject;
   deny?: boolean;
+  exposeDetail?: boolean;
   eventType: 'beforeRequestHook' | 'afterRequestHook';
 }
 
@@ -93,6 +94,7 @@ export interface GuardrailResult {
   error?: Error | null;
   async: boolean;
   deny: boolean;
+  exposeDetail?: boolean;
   execution_time: number;
   skipped: boolean;
   type: HookType;
@@ -116,4 +118,24 @@ export enum HookType {
 
 export interface HandlerOptions {
   env: Record<string, any>;
+}
+
+export function filterHookResultsByExposeDetail(
+  results: HookResult[]
+): HookResult[] {
+  return results.map((r) => {
+    if (r.exposeDetail) return r;
+    return {
+      id: r.id,
+      verdict: r.verdict,
+      type: r.type,
+      deny: r.deny,
+      async: r.async,
+      skipped: r.skipped,
+      execution_time: r.execution_time,
+      created_at: r.created_at,
+      checks: [],
+      feedback: {},
+    } as HookResult;
+  });
 }

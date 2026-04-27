@@ -15,6 +15,7 @@ import {
   handleTextResponse,
 } from './streamHandler';
 import { HookSpan } from '../middlewares/hooks';
+import { filterHookResultsByExposeDetail } from '../middlewares/hooks/types';
 import { env } from 'hono/adapter';
 import { OpenAIModelResponseJSONToStreamGenerator } from '../providers/open-ai-base/createModelResponse';
 import { anthropicMessagesJsonToStreamGenerator } from '../providers/anthropic-base/utils/streamGenerator';
@@ -229,8 +230,12 @@ function createHookResponse(
     ...((hooksResult.beforeRequestHooksResult?.length ||
       hooksResult.afterRequestHooksResult?.length) && {
       hook_results: {
-        before_request_hooks: hooksResult.beforeRequestHooksResult,
-        after_request_hooks: hooksResult.afterRequestHooksResult,
+        before_request_hooks: filterHookResultsByExposeDetail(
+          hooksResult.beforeRequestHooksResult || []
+        ),
+        after_request_hooks: filterHookResultsByExposeDetail(
+          hooksResult.afterRequestHooksResult || []
+        ),
       },
     }),
   };
