@@ -350,4 +350,56 @@ describe('UAG: Guardrail verdict header 数据结构 (AC #6)', () => {
       expect(headers).toEqual({});
     });
   });
+
+  describe('beforeRequestHookHandler deny path injects guardrail headers', () => {
+    it('span.getHooksResult() after deny produces correct guardrail headers', async () => {
+      const { plugins } = require('../../plugins');
+      plugins.testGuardrail.checkContent.mockResolvedValue({
+        verdict: false,
+        data: { reason: 'gibberish' },
+      });
+
+      const span = hooksManager.createSpan(
+        { messages: [{ role: 'user', content: 'asdfgh jkl' }] },
+        {},
+        'openai',
+        false,
+        [
+          {
+            type: HookType.GUARDRAIL,
+            id: 'gibberish-guard',
+            checks: [{ id: 'testGuardrail.checkContent', parameters: {} }],
+            deny: true,
+            eventType: 'beforeRequestHook' as const,
+          },
+        ],
+        [],
+        null,
+        'chatComplete',
+        {}
+      );
+
+      const { shouldDeny } = await hooksManager.executeHooks(
+        span.id,
+        ['syncBeforeRequestHook'],
+        { env: {} }
+      );
+      expect(shouldDeny).toBe(true);
+
+      const allHooksResult = (
+        hooksManager.getSpan(span.id) as HookSpan
+      ).getHooksResult();
+      const guardrailHeaders = computeGuardrailHeaders(
+        allHooksResult,
+        shouldDeny
+      );
+
+      expect(guardrailHeaders).not.toBeNull();
+      expect(guardrailHeaders![GUARDRAIL_HEADER_VERDICT]).toBe('deny');
+      expect(guardrailHeaders![GUARDRAIL_HEADER_TRIGGERED]).toBe(
+        'testGuardrail.checkContent'
+      );
+      expect(guardrailHeaders![GUARDRAIL_HEADER_ACTION]).toBe('block');
+    });
+  });
 });

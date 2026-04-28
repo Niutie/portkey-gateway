@@ -36,6 +36,7 @@ import {
   HookType,
   filterHookResultsByExposeDetail,
 } from '../middlewares/hooks/types';
+import { computeGuardrailHeaders } from './services/guardrailHeaderService';
 
 // Services
 import { CacheResponseObject, CacheService } from './services/cacheService';
@@ -1529,8 +1530,13 @@ export async function beforeRequestHookHandler(
     isTransformed = span.getContext().request.isTransformed;
 
     if (hooksResult.shouldDeny) {
+      const allHooksResult = span.getHooksResult();
       const filteredResults = filterHookResultsByExposeDetail(
-        hooksResult.results
+        allHooksResult.beforeRequestHooksResult
+      );
+      const guardrailHeaders = computeGuardrailHeaders(
+        allHooksResult,
+        hooksResult.shouldDeny
       );
       return {
         response: new Response(
@@ -1549,7 +1555,10 @@ export async function beforeRequestHookHandler(
           }),
           {
             status: 446,
-            headers: { 'content-type': 'application/json' },
+            headers: {
+              'content-type': 'application/json',
+              ...(guardrailHeaders ?? {}),
+            },
           }
         ),
         createdAt: start,
